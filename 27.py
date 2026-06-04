@@ -1,7 +1,7 @@
 """
 无人机地面站系统 - 纯高德地图版本
 使用高德地图 JavaScript API
-需要申请高德地图 API Key
+需要高德地图 API Key
 """
 
 import streamlit as st
@@ -9,7 +9,6 @@ import pandas as pd
 import time
 import math
 from datetime import datetime
-import json
 
 # ============================ 坐标系转换算法 ============================
 
@@ -30,7 +29,7 @@ def transform_lng(lng, lat):
     return ret
 
 def wgs84_to_gcj02(lng, lat):
-    """WGS-84 转 GCJ-02"""
+    """WGS-84 转 GCJ-02（GPS坐标转高德坐标）"""
     if out_of_china(lng, lat):
         return lng, lat
     dlat = transform_lat(lng - 105.0, lat - 35.0)
@@ -44,18 +43,18 @@ def wgs84_to_gcj02(lng, lat):
     return lng + dlng, lat + dlat
 
 def gcj02_to_wgs84(lng, lat):
-    """GCJ-02 转 WGS-84"""
+    """GCJ-02 转 WGS-84（高德坐标转GPS坐标）"""
     if out_of_china(lng, lat):
         return lng, lat
     dlng, dlat = wgs84_to_gcj02(lng, lat)
     return lng * 2 - dlng, lat * 2 - dlat
 
 def out_of_china(lng, lat):
-    """判断是否在中国境外"""
+    """判断坐标是否在中国境外"""
     return not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271)
 
-def convert_for_display(lat, lng, src_system):
-    """转换为地图显示坐标（高德使用 GCJ-02）"""
+def convert_to_gcj02(lat, lng, src_system):
+    """转换为高德地图坐标（GCJ-02）"""
     if src_system == "WGS-84":
         return wgs84_to_gcj02(lng, lat)
     else:
@@ -65,24 +64,26 @@ def convert_for_display(lat, lng, src_system):
 
 def calculate_distance(lat1, lng1, lat2, lng2):
     """使用 Haversine 公式计算两点间距离（米）"""
-    R = 6371000
+    R = 6371000  # 地球半径（米）
+    
     lat1_rad = math.radians(lat1)
     lat2_rad = math.radians(lat2)
     delta_lat = math.radians(lat2 - lat1)
     delta_lng = math.radians(lng2 - lng1)
+    
     a = math.sin(delta_lat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lng / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
     return R * c
 
 # ============================ 初始化 Session State ============================
 
 def init_state():
     """初始化 session state 变量"""
+    
     # 高德地图 API Key（需要自己申请）
     if "amap_key" not in st.session_state:
-        # 请替换为你的高德地图 API Key
-        # 申请地址：https://lbs.amap.com/
-        st.session_state.amap_key = ""  # 在这里填入你的 Key
+        st.session_state.amap_key = "YOUR_AMAP_KEY"  # 替换为你的 Key
     
     # 飞行监控相关
     if "running" not in st.session_state:
@@ -145,7 +146,7 @@ def generate_map_html():
     
     # 获取显示坐标（GCJ-02）
     if st.session_state.point_A["set"]:
-        a_lng, a_lat = convert_for_display(
+        a_lng, a_lat = convert_to_gcj02(
             st.session_state.point_A["lat"], 
             st.session_state.point_A["lng"], 
             st.session_state.coord_system
@@ -154,7 +155,7 @@ def generate_map_html():
         a_lng, a_lat = None, None
     
     if st.session_state.point_B["set"]:
-        b_lng, b_lat = convert_for_display(
+        b_lng, b_lat = convert_to_gcj02(
             st.session_state.point_B["lat"], 
             st.session_state.point_B["lng"], 
             st.session_state.coord_system
@@ -165,7 +166,7 @@ def generate_map_html():
     # 障碍物坐标转换
     obstacles_data = []
     for obs in st.session_state.obstacles:
-        o_lng, o_lat = convert_for_display(obs["lat"], obs["lng"], "WGS-84")
+        o_lng, o_lat = convert_to_gcj02(obs["lat"], obs["lng"], "WGS-84")
         obstacles_data.append({
             "lng": o_lng,
             "lat": o_lat,
@@ -181,6 +182,14 @@ def generate_map_html():
             st.session_state.point_B["lat"], st.session_state.point_B["lng"]
         )
     
+    # 确定地图中心点
+    if a_lat:
+        center_lat, center_lng = a_lat, a_lng
+    elif b_lat:
+        center_lat, center_lng = b_lat, b_lng
+    else:
+        center_lat, center_lng = 32.2332, 118.7492
+    
     # 生成 HTML
     html_code = f'''
     <!DOCTYPE html>
@@ -193,19 +202,6 @@ def generate_map_html():
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{ font-family: "Microsoft YaHei", sans-serif; }}
             #container {{ width: 100%; height: 100%; position: relative; }}
-            .info-panel {{
-                position: absolute;
-                bottom: 20px;
-                left: 20px;
-                background: rgba(0,0,0,0.75);
-                color: white;
-                padding: 10px 15px;
-                border-radius: 8px;
-                z-index: 1000;
-                font-size: 12px;
-                pointer-events: none;
-                backdrop-filter: blur(5px);
-            }}
             .legend {{
                 position: absolute;
                 bottom: 20px;
@@ -218,11 +214,12 @@ def generate_map_html():
                 font-size: 12px;
                 pointer-events: none;
                 backdrop-filter: blur(5px);
+                font-family: monospace;
             }}
-            .legend p {{ margin: 3px 0; }}
-            .legend .green {{ color: #00ff00; }}
-            .legend .red {{ color: #ff0000; }}
-            .legend .yellow {{ color: #ffff00; }}
+            .legend p {{ margin: 5px 0; }}
+            .legend .green {{ color: #00ff00; font-weight: bold; }}
+            .legend .red {{ color: #ff0000; font-weight: bold; }}
+            .legend .yellow {{ color: #ffff00; font-weight: bold; }}
             .distance-label {{
                 position: absolute;
                 top: 20px;
@@ -230,12 +227,27 @@ def generate_map_html():
                 transform: translateX(-50%);
                 background: rgba(0,0,0,0.7);
                 color: #ffff00;
-                padding: 5px 12px;
-                border-radius: 20px;
+                padding: 8px 16px;
+                border-radius: 25px;
                 z-index: 1000;
                 font-size: 14px;
                 font-weight: bold;
                 pointer-events: none;
+                font-family: monospace;
+                white-space: nowrap;
+            }}
+            .info-panel {{
+                position: absolute;
+                bottom: 20px;
+                left: 20px;
+                background: rgba(0,0,0,0.6);
+                color: white;
+                padding: 8px 12px;
+                border-radius: 8px;
+                z-index: 1000;
+                font-size: 11px;
+                pointer-events: none;
+                font-family: monospace;
             }}
         </style>
     </head>
@@ -245,114 +257,115 @@ def generate_map_html():
             ✈️ 航线距离: {distance:.0f} 米 | 飞行高度: {st.session_state.flight_height} 米
         </div>
         <div class="legend">
-            <p><strong>图例</strong></p>
+            <p><strong>📖 图例</strong></p>
             <p><span class="green">●</span> 起点A</p>
             <p><span class="red">●</span> 终点B</p>
             <p><span class="yellow">━</span> 规划航线</p>
             <p><span class="red">●</span> 障碍物</p>
         </div>
         <div class="info-panel">
-            💡 操作提示：鼠标拖拽平移 | 滚轮缩放 | 右键旋转
+            🖱️ 鼠标拖拽平移 | 🔍 滚轮缩放 | 🖱️ 右键拖拽旋转
         </div>
         
         <script src="https://webapi.amap.com/maps?v=2.0&key={st.session_state.amap_key}"></script>
-        <script src="https://webapi.amap.com/ui/1.1/main.js"></script>
         <script>
         var map;
-        var markers = [];
-        var polylines = [];
-        var circles = [];
         
         // 初始化地图
         function initMap() {{
-            // 默认中心点
-            var centerLat = 32.2332;
-            var centerLng = 118.7492;
-            
-            // 设置中心点
-            ''' + (f'if ({a_lat} !== null) {{ centerLat = {a_lat}; centerLng = {a_lng}; }}' if a_lat else '') + '''
-            ''' + (f'else if ({b_lat} !== null) {{ centerLat = {b_lat}; centerLng = {b_lng}; }}' if b_lat else '') + '''
-            
+            // 创建地图
             map = new AMap.Map('container', {{
-                center: [centerLng, centerLat],
-                zoom: ''' + str(st.session_state.map_zoom) + ''',
+                center: [{center_lng}, {center_lat}],
+                zoom: {st.session_state.map_zoom},
                 viewMode: '3D',
-                pitch: 45,
+                pitch: 50,
                 rotation: 0
             }});
             
             // 添加控件
             map.addControl(new AMap.Scale());
-            map.addControl(new AMap.ToolBar());
-            map.addControl(new AMap.ControlBar());
+            map.addControl(new AMap.ToolBar({{
+                position: 'RT'
+            }}));
+            map.addControl(new AMap.ControlBar({{
+                position: 'RB'
+            }}));
             
-            // 添加测量工具
-            AMap.plugin(['AMap.MouseTool'], function() {{
-                var mouseTool = new AMap.MouseTool(map);
-                // 测量工具已添加，用户可右键使用
-            }});
+            // 添加鹰眼图
+            map.addControl(new AMap.HawkEye({{
+                opened: false
+            }}));
             
-            ''' + (f'''
-            // 添加起点A
+            '''
+    
+    # 添加起点A
+    if a_lat:
+        html_code += f'''
+            // 起点A 标记
             var aMarker = new AMap.Marker({{
                 position: [{a_lng}, {a_lat}],
                 title: '起点A',
                 icon: new AMap.Icon({{
-                    size: new AMap.Size(32, 32),
+                    size: new AMap.Size(36, 36),
                     image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
-                    imageSize: new AMap.Size(32, 32)
+                    imageSize: new AMap.Size(36, 36)
                 }}),
                 label: {{
-                    content: '<div style="background:green;color:white;padding:2px 6px;border-radius:4px;">起点A</div>',
-                    offset: new AMap.Pixel(0, -30)
+                    content: '<div style="background:#00aa00;color:white;padding:2px 8px;border-radius:4px;font-size:12px;">🚁 起点A</div>',
+                    offset: new AMap.Pixel(0, -35)
                 }}
             }});
             aMarker.setMap(map);
             
-            // A点圆形
+            // 起点A 圆形区域
             var aCircle = new AMap.Circle({{
                 center: [{a_lng}, {a_lat}],
-                radius: 20,
+                radius: 25,
                 strokeColor: '#00ff00',
                 strokeOpacity: 0.8,
                 strokeWeight: 2,
                 fillColor: '#00ff00',
-                fillOpacity: 0.2
+                fillOpacity: 0.15
             }});
             aCircle.setMap(map);
-            ''') if a_lat else '') + '''
-            
-            ''' + (f'''
-            // 添加终点B
+        '''
+    
+    # 添加终点B
+    if b_lat:
+        html_code += f'''
+            // 终点B 标记
             var bMarker = new AMap.Marker({{
                 position: [{b_lng}, {b_lat}],
                 title: '终点B',
                 icon: new AMap.Icon({{
-                    size: new AMap.Size(32, 32),
+                    size: new AMap.Size(36, 36),
                     image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png',
-                    imageSize: new AMap.Size(32, 32)
+                    imageSize: new AMap.Size(36, 36)
                 }}),
                 label: {{
-                    content: '<div style="background:red;color:white;padding:2px 6px;border-radius:4px;">终点B</div>',
-                    offset: new AMap.Pixel(0, -30)
+                    content: '<div style="background:#cc0000;color:white;padding:2px 8px;border-radius:4px;font-size:12px;">🎯 终点B</div>',
+                    offset: new AMap.Pixel(0, -35)
                 }}
             }});
             bMarker.setMap(map);
             
+            // 终点B 圆形区域
             var bCircle = new AMap.Circle({{
                 center: [{b_lng}, {b_lat}],
-                radius: 20,
+                radius: 25,
                 strokeColor: '#ff0000',
                 strokeOpacity: 0.8,
                 strokeWeight: 2,
                 fillColor: '#ff0000',
-                fillOpacity: 0.2
+                fillOpacity: 0.15
             }});
             bCircle.setMap(map);
-            ''') if b_lat else '') + '''
-            
-            ''' + (f'''
-            // 添加航线
+        '''
+    
+    # 添加航线
+    if a_lat and b_lat:
+        html_code += f'''
+            // 规划航线
             var linePath = [
                 [{a_lng}, {a_lat}],
                 [{b_lng}, {b_lat}]
@@ -363,58 +376,40 @@ def generate_map_html():
                 strokeOpacity: 0.9,
                 strokeWeight: 5,
                 lineCap: 'round',
-                lineJoin: 'round'
+                lineJoin: 'round',
+                showDir: true
             }});
             polyline.setMap(map);
-            
-            // 添加航线方向箭头
-            var midPoint = [
-                ({a_lng} + {b_lng}) / 2,
-                ({a_lat} + {b_lat}) / 2
-            ];
-            var arrowMarker = new AMap.Marker({{
-                position: midPoint,
-                icon: new AMap.Icon({{
-                    size: new AMap.Size(24, 24),
-                    image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_blue.png',
-                    imageSize: new AMap.Size(24, 24)
-                }})
-            }});
-            arrowMarker.setMap(map);
-            ''') if a_lat and b_lat else '') + '''
-            
-            ''' + '\n'.join([f'''
+        '''
+    
+    # 添加障碍物
+    for i, obs in enumerate(obstacles_data):
+        html_code += f'''
             // 障碍物: {obs["name"]}
             var obstacleCircle_{i} = new AMap.Circle({{
                 center: [{obs["lng"]}, {obs["lat"]}],
                 radius: {obs["radius"]},
-                strokeColor: '#ff0000',
+                strokeColor: '#ff4444',
                 strokeOpacity: 0.8,
                 strokeWeight: 2,
                 fillColor: '#ff0000',
-                fillOpacity: 0.4
+                fillOpacity: 0.35
             }});
             obstacleCircle_{i}.setMap(map);
             
             // 障碍物标签
             var obstacleLabel_{i} = new AMap.Marker({{
                 position: [{obs["lng"]}, {obs["lat"]}],
-                content: '<div style="background:rgba(255,0,0,0.8);color:white;padding:2px 6px;border-radius:12px;font-size:11px;">{obs["name"]}</div>',
+                content: '<div style="background:#ff0000;color:white;padding:2px 6px;border-radius:12px;font-size:11px;font-weight:bold;">⚠️ {obs["name"]}</div>',
                 offset: new AMap.Pixel(0, -20)
             }});
             obstacleLabel_{i}.setMap(map);
-            ''' for i, obs in enumerate(obstacles_data)]) + '''
-            
-            // 添加比例尺
-            map.addControl(new AMap.Scale());
-            
-            // 添加鹰眼图
-            map.addControl(new AMap.HawkEye({{
-                opened: false
-            }}));
-        }}
+        '''
+    
+    html_code += '''
+        }
         
-        // 等待地图加载完成
+        // 地图加载完成
         window.onload = initMap;
         </script>
     </body>
@@ -433,21 +428,26 @@ st.set_page_config(
 
 # ============================ 侧边栏 ============================
 
-st.sidebar.markdown("# 🚁 导航")
-page = st.sidebar.radio("功能页面", ["🗺️ 航线规划", "💓 飞行监控"])
-
+st.sidebar.markdown("# 🚁 无人机地面站系统")
 st.sidebar.markdown("---")
-st.sidebar.markdown("# 🔑 地图配置")
 
-# 高德地图 API Key 输入
+st.sidebar.markdown("# 🔑 地图配置")
+st.sidebar.markdown("### 高德地图 API Key")
+
+# API Key 输入
 amap_key_input = st.sidebar.text_input(
-    "高德地图 API Key",
+    "API Key",
     value=st.session_state.amap_key,
     type="password",
     help="申请地址: https://lbs.amap.com/"
 )
 if amap_key_input:
     st.session_state.amap_key = amap_key_input
+
+# API Key 提示
+if st.session_state.amap_key == "YOUR_AMAP_KEY" or not st.session_state.amap_key:
+    st.sidebar.warning("⚠️ 请输入高德地图 API Key")
+    st.sidebar.info("📌 如何获取？\n1. 访问 lbs.amap.com\n2. 注册/登录\n3. 控制台 → 应用管理 → 创建应用\n4. 选择 Web端(JS API) 服务")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("# 📐 坐标系设置")
@@ -472,26 +472,33 @@ st.sidebar.markdown("- 🟢 绿色: 起点A")
 st.sidebar.markdown("- 🔴 红色: 终点B/障碍物")
 st.sidebar.markdown("- 🟡 黄色: 规划航线")
 
+# 导航
+st.sidebar.markdown("---")
+st.sidebar.markdown("# 🧭 导航")
+page = st.sidebar.radio("功能页面", ["🗺️ 航线规划", "💓 飞行监控"])
+
 # ============================ 航线规划页面 ============================
 
 if page == "🗺️ 航线规划":
-    st.title("🗺️ 航线规划")
-    st.markdown("基于高德地图的无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
+    st.title("🗺️ 无人机航线规划系统")
+    st.markdown("基于高德地图的3D无人机航线规划 | 支持 WGS-84 / GCJ-02 坐标系转换")
     
     # 检查 API Key
-    if not st.session_state.amap_key:
-        st.error("⚠️ 请先在侧边栏输入高德地图 API Key！")
-        st.info("""
-        ### 如何获取高德地图 API Key？
-        
-        1. 访问 [高德开放平台](https://lbs.amap.com/)
-        2. 注册/登录账号
-        3. 进入「应用管理」→「我的应用」
-        4. 创建新应用，选择「Web端(JS API)」服务
-        5. 复制生成的 Key 到侧边栏输入框
-        
-        **注意**：需要申请 Web 端 JS API 的 Key
-        """)
+    if not st.session_state.amap_key or st.session_state.amap_key == "YOUR_AMAP_KEY":
+        st.error("⚠️ 请先在左侧边栏输入高德地图 API Key！")
+        with st.expander("📖 如何获取高德地图 API Key？"):
+            st.markdown("""
+            ### 获取步骤：
+            
+            1. 访问 **https://lbs.amap.com/**
+            2. 点击右上角「注册」或「登录」
+            3. 进入「控制台」→「应用管理」→「我的应用」
+            4. 点击「创建新应用」
+            5. 填写应用名称（如：无人机地面站）
+            6. 选择「Web端(JS API)」服务
+            7. 点击「创建」，复制生成的 Key
+            8. 将 Key 粘贴到左侧边栏输入框
+            """)
         st.stop()
     
     col1, col2 = st.columns([1, 1.2])
@@ -501,18 +508,21 @@ if page == "🗺️ 航线规划":
         
         # 起点A
         st.markdown("#### 📍 起点A")
-        a_lat = st.number_input(
-            "纬度", 
-            value=st.session_state.point_A["lat"], 
-            format="%.6f", 
-            key="a_lat"
-        )
-        a_lng = st.number_input(
-            "经度", 
-            value=st.session_state.point_A["lng"], 
-            format="%.6f", 
-            key="a_lng"
-        )
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            a_lat = st.number_input(
+                "纬度", 
+                value=st.session_state.point_A["lat"], 
+                format="%.6f", 
+                key="a_lat"
+            )
+        with col_a2:
+            a_lng = st.number_input(
+                "经度", 
+                value=st.session_state.point_A["lng"], 
+                format="%.6f", 
+                key="a_lng"
+            )
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("📍 设置A点", use_container_width=True):
@@ -524,20 +534,25 @@ if page == "🗺️ 航线规划":
                 st.session_state.point_A["set"] = False
                 st.rerun()
         
+        st.markdown("---")
+        
         # 终点B
         st.markdown("#### 🎯 终点B")
-        b_lat = st.number_input(
-            "纬度", 
-            value=st.session_state.point_B["lat"], 
-            format="%.6f", 
-            key="b_lat"
-        )
-        b_lng = st.number_input(
-            "经度", 
-            value=st.session_state.point_B["lng"], 
-            format="%.6f", 
-            key="b_lng"
-        )
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            b_lat = st.number_input(
+                "纬度", 
+                value=st.session_state.point_B["lat"], 
+                format="%.6f", 
+                key="b_lat"
+            )
+        with col_b2:
+            b_lng = st.number_input(
+                "经度", 
+                value=st.session_state.point_B["lng"], 
+                format="%.6f", 
+                key="b_lng"
+            )
         col_btn3, col_btn4 = st.columns(2)
         with col_btn3:
             if st.button("🎯 设置B点", use_container_width=True):
@@ -549,6 +564,8 @@ if page == "🗺️ 航线规划":
                 st.session_state.point_B["set"] = False
                 st.rerun()
         
+        st.markdown("---")
+        
         # 飞行参数
         st.markdown("#### ✈️ 飞行参数")
         st.session_state.flight_height = st.number_input(
@@ -557,6 +574,8 @@ if page == "🗺️ 航线规划":
             step=5.0,
             help="无人机飞行的高度"
         )
+        
+        st.markdown("---")
         
         # 障碍物管理
         st.markdown("#### 🚧 障碍物管理")
@@ -581,7 +600,7 @@ if page == "🗺️ 航线规划":
     with col2:
         st.markdown("### 📊 系统状态")
         
-        # 状态显示
+        # 状态显示卡片
         if st.session_state.point_A["set"]:
             st.success(f"✅ **A点已设**\n\n📍 纬度: {st.session_state.point_A['lat']:.6f}\n📍 经度: {st.session_state.point_A['lng']:.6f}")
         else:
@@ -623,7 +642,7 @@ if page == "🗺️ 航线规划":
     # 生成并显示地图
     try:
         map_html = generate_map_html()
-        st.components.v1.html(map_html, height=600, width=1200, scrolling=False)
+        st.components.v1.html(map_html, height=550, width=1200, scrolling=False)
     except Exception as e:
         st.error(f"地图加载失败: {str(e)}")
         st.info("请检查 API Key 是否正确，或者刷新页面重试")
@@ -634,7 +653,7 @@ else:
     st.title("🛸 无人机心跳监测系统")
     st.markdown("模拟无人机每秒发送心跳包，地面站实时监测，3秒未收到自动报警")
     
-    # 自动刷新
+    # 自动刷新（每秒刷新一次）
     if st.session_state.running:
         st.markdown('<meta http-equiv="refresh" content="1">', unsafe_allow_html=True)
     
