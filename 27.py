@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import math
-from datetime datetime
+from datetime import datetime  # 修复：添加 import
 
 # ---------------------------- 坐标系转换算法 ----------------------------
 def transform_lat(lng, lat):
@@ -332,6 +332,7 @@ if page == "航线规划":
     # 航线信息
     if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
         st.markdown("### ✈️ 航线信息")
+        dist = calculate_distance(a_lat, a_lng, b_lat, b_lng)
         st.markdown(f"- 起点A → 终点B")
         st.markdown(f"- 直线距离: **{dist:.1f} 米**")
         st.markdown(f"- 飞行高度: **{st.session_state.flight_height} 米**")
