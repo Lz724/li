@@ -3,8 +3,9 @@ import pandas as pd
 import time
 import math
 from datetime import datetime
-import pydeck as pdk
-import numpy as np
+import folium
+from streamlit_folium import folium_static
+from branca.element import Figure
 
 # ---------------------------- 坐标系转换算法 ----------------------------
 def transform_lat(lng, lat):
@@ -43,12 +44,12 @@ def gcj02_to_wgs84(lng, lat):
 def out_of_china(lng, lat):
     return not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271)
 
-def convert_to_wgs84(lat, lng, src_system):
-    """将坐标转换为 WGS-84 用于地图显示"""
+def convert_for_display(lat, lng, src_system):
+    """转换为地图显示坐标（GCJ-02，因为高德地图使用GCJ-02）"""
     if src_system == "WGS-84":
-        return lng, lat
+        return wgs84_to_gcj02(lng, lat)
     else:
-        return gcj02_to_wgs84(lng, lat)
+        return lng, lat
 
 # ---------------------------- 距离计算函数 ----------------------------
 def calculate_distance(lat1, lng1, lat2, lng2):
@@ -63,7 +64,6 @@ def calculate_distance(lat1, lng1, lat2, lng2):
 
 # ---------------------------- 初始化 Session State ----------------------------
 def init_state():
-    # 飞行监控相关
     if "running" not in st.session_state:
         st.session_state.running = False
         st.session_state.seq = 0
@@ -71,7 +71,6 @@ def init_state():
         st.session_state.records = []
         st.session_state.alert_msg = ""
     
-    # 航线规划相关
     if "coord_system" not in st.session_state:
         st.session_state.coord_system = "GCJ-02"
     
@@ -85,7 +84,6 @@ def init_state():
         st.session_state.flight_height = 50.0
     
     if "obstacles" not in st.session_state:
-        # 校园内障碍物（位于AB点之间）
         st.session_state.obstacles = [
             {"lat": 32.2328, "lng": 118.7485, "radius": 30, "name": "教学楼"},
             {"lat": 32.2335, "lng": 118.7492, "radius": 35, "name": "图书馆"},
@@ -95,10 +93,7 @@ def init_state():
         ]
     
     if "map_zoom" not in st.session_state:
-        st.session_state.map_zoom = 16
-    
-    if "map_pitch" not in st.session_state:
-        st.session_state.map_pitch = 45  # 3D倾斜角度
+        st.session_state.map_zoom = 17
 
 init_state()
 
@@ -117,130 +112,200 @@ def reset_monitor():
     st.session_state.records = []
     st.session_state.alert_msg = ""
 
-# ---------------------------- 3D卫星地图创建函数 ----------------------------
-def create_3d_satellite_map():
-    """创建使用卫星影像的3D地图"""
+# ---------------------------- 高德卫星图创建函数 ----------------------------
+def create_satellite_map():
+    """创建使用高德卫星图的交互式地图"""
     
-    layers = []
-    scatter_data = []
-    
-    # 获取 A、B 点的 WGS-84 坐标
-    a_wgs_lng, a_wgs_lat = None, None
-    b_wgs_lng, b_wgs_lat = None, None
-    
-    # 添加 A 点（绿色）
+    # 确定地图中心点
     if st.session_state.point_A["set"]:
-        a_wgs_lng, a_wgs_lat = convert_to_wgs84(
+        disp_lng, disp_lat = convert_for_display(
             st.session_state.point_A["lat"], 
             st.session_state.point_A["lng"], 
             st.session_state.coord_system
         )
-        scatter_data.append({
-            "lng": a_wgs_lng,
-            "lat": a_wgs_lat,
-            "color": [0, 255, 0],
-            "size": 80,
-            "name": f"起点A\n纬度: {st.session_state.point_A['lat']:.6f}\n经度: {st.session_state.point_A['lng']:.6f}"
-        })
-    
-    # 添加 B 点（红色）
-    if st.session_state.point_B["set"]:
-        b_wgs_lng, b_wgs_lat = convert_to_wgs84(
+        center_lat, center_lng = disp_lat, disp_lng
+    elif st.session_state.point_B["set"]:
+        disp_lng, disp_lat = convert_for_display(
             st.session_state.point_B["lat"], 
             st.session_state.point_B["lng"], 
             st.session_state.coord_system
         )
-        scatter_data.append({
-            "lng": b_wgs_lng,
-            "lat": b_wgs_lat,
-            "color": [255, 0, 0],
-            "size": 80,
-            "name": f"终点B\n纬度: {st.session_state.point_B['lat']:.6f}\n经度: {st.session_state.point_B['lng']:.6f}"
-        })
-    
-    # 添加障碍物（红色半透明圆）
-    for obs in st.session_state.obstacles:
-        obs_wgs_lng, obs_wgs_lat = convert_to_wgs84(obs["lat"], obs["lng"], "WGS-84")
-        scatter_data.append({
-            "lng": obs_wgs_lng,
-            "lat": obs_wgs_lat,
-            "color": [255, 0, 0],
-            "size": obs["radius"] * 2,
-            "name": f"{obs['name']}\n半径: {obs['radius']}m"
-        })
-    
-    # 散点图层
-    if scatter_data:
-        scatter_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=scatter_data,
-            get_position=["lng", "lat"],
-            get_radius="size",
-            get_fill_color="color",
-            get_line_color="color",
-            pickable=True,
-            auto_highlight=True,
-            radius_scale=1,
-            radius_min_pixels=5,
-            radius_max_pixels=60
-        )
-        layers.append(scatter_layer)
-    
-    # 航线图层（黄色）
-    if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
-        line_data = [{
-            "start_lng": a_wgs_lng,
-            "start_lat": a_wgs_lat,
-            "end_lng": b_wgs_lng,
-            "end_lat": b_wgs_lat
-        }]
-        
-        line_layer = pdk.Layer(
-            "LineLayer",
-            data=line_data,
-            get_source_position=["start_lng", "start_lat"],
-            get_target_position=["end_lng", "end_lat"],
-            get_color=[255, 255, 0],
-            get_width=4,
-            pickable=True
-        )
-        layers.append(line_layer)
-    
-    # 确定地图中心
-    if st.session_state.point_A["set"]:
-        center_lng, center_lat = a_wgs_lng, a_wgs_lat
-    elif st.session_state.point_B["set"]:
-        center_lng, center_lat = b_wgs_lng, b_wgs_lat
+        center_lat, center_lng = disp_lat, disp_lng
     else:
-        center_lng, center_lat = 118.7492, 32.2332
+        center_lat, center_lng = 32.2332, 118.7492
     
-    # 视图设置（3D视角）
-    view_state = pdk.ViewState(
-        longitude=center_lng,
-        latitude=center_lat,
-        zoom=st.session_state.map_zoom,
-        pitch=st.session_state.map_pitch,
-        bearing=0
+    # 高德卫星图瓦片 URL
+    satellite_tiles = "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"
+    
+    m = folium.Map(
+        location=[center_lat, center_lng],
+        zoom_start=st.session_state.map_zoom,
+        control_scale=True,
+        tiles=None
     )
     
-    # 使用卫星地图样式
-    deck = pdk.Deck(
-        layers=layers,
-        initial_view_state=view_state,
-        map_style="satellite",
-        tooltip={"text": "{name}"}
-    )
+    # 添加高德卫星图
+    folium.TileLayer(
+        tiles=satellite_tiles,
+        attr='高德地图',
+        name='卫星图',
+        subdomains=['1', '2', '3', '4']
+    ).add_to(m)
     
-    return deck
+    # 添加高德路网图层
+    road_tiles = "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"
+    folium.TileLayer(
+        tiles=road_tiles,
+        attr='高德路网',
+        name='路网图',
+        subdomains=['1', '2', '3', '4']
+    ).add_to(m)
+    
+    folium.LayerControl().add_to(m)
+    folium.plugins.Fullscreen(position='topright').add_to(m)
+    
+    # 测量工具
+    folium.plugins.MeasureControl(
+        position='topleft',
+        primary_length_unit='meters',
+        secondary_length_unit='kilometers',
+        primary_area_unit='sqmeters'
+    ).add_to(m)
+    
+    # 添加 A 点
+    if st.session_state.point_A["set"]:
+        disp_lng, disp_lat = convert_for_display(
+            st.session_state.point_A["lat"], 
+            st.session_state.point_A["lng"], 
+            st.session_state.coord_system
+        )
+        
+        folium.Marker(
+            location=[disp_lat, disp_lng],
+            popup=f"""
+            <div style="min-width: 150px;">
+                <h4 style="color: green;">起点A</h4>
+                <p>纬度: {st.session_state.point_A['lat']:.6f}<br>
+                经度: {st.session_state.point_A['lng']:.6f}</p>
+            </div>
+            """,
+            icon=folium.Icon(color="green", icon="play", prefix="fa"),
+            tooltip="起点A"
+        ).add_to(m)
+        
+        folium.Circle(
+            radius=20,
+            location=[disp_lat, disp_lng],
+            color="green",
+            fill=True,
+            fill_opacity=0.2,
+            weight=3
+        ).add_to(m)
+    
+    # 添加 B 点
+    if st.session_state.point_B["set"]:
+        disp_lng, disp_lat = convert_for_display(
+            st.session_state.point_B["lat"], 
+            st.session_state.point_B["lng"], 
+            st.session_state.coord_system
+        )
+        
+        folium.Marker(
+            location=[disp_lat, disp_lng],
+            popup=f"""
+            <div style="min-width: 150px;">
+                <h4 style="color: red;">终点B</h4>
+                <p>纬度: {st.session_state.point_B['lat']:.6f}<br>
+                经度: {st.session_state.point_B['lng']:.6f}</p>
+            </div>
+            """,
+            icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa"),
+            tooltip="终点B"
+        ).add_to(m)
+        
+        folium.Circle(
+            radius=20,
+            location=[disp_lat, disp_lng],
+            color="red",
+            fill=True,
+            fill_opacity=0.2,
+            weight=3
+        ).add_to(m)
+    
+    # 添加航线
+    if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
+        a_disp_lng, a_disp_lat = convert_for_display(
+            st.session_state.point_A["lat"], 
+            st.session_state.point_A["lng"], 
+            st.session_state.coord_system
+        )
+        b_disp_lng, b_disp_lat = convert_for_display(
+            st.session_state.point_B["lat"], 
+            st.session_state.point_B["lng"], 
+            st.session_state.coord_system
+        )
+        
+        points = [[a_disp_lat, a_disp_lng], [b_disp_lat, b_disp_lng]]
+        
+        folium.PolyLine(
+            points,
+            color="yellow",
+            weight=5,
+            opacity=0.9,
+            popup=f"规划航线 (高度: {st.session_state.flight_height}m)"
+        ).add_to(m)
+        
+        # 距离标注
+        distance = calculate_distance(
+            st.session_state.point_A["lat"], st.session_state.point_A["lng"],
+            st.session_state.point_B["lat"], st.session_state.point_B["lng"]
+        )
+        
+        mid_lat = (a_disp_lat + b_disp_lat) / 2
+        mid_lng = (a_disp_lng + b_disp_lng) / 2
+        
+        folium.map.Marker(
+            [mid_lat, mid_lng],
+            icon=folium.DivIcon(
+                html=f'<div style="background-color: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 20px; color: yellow;">{distance:.0f}m</div>'
+            )
+        ).add_to(m)
+    
+    # 添加障碍物
+    for obs in st.session_state.obstacles:
+        obs_disp_lng, obs_disp_lat = convert_for_display(obs["lat"], obs["lng"], "WGS-84")
+        
+        folium.Circle(
+            radius=obs["radius"],
+            location=[obs_disp_lat, obs_disp_lng],
+            color="red",
+            fill=True,
+            fill_opacity=0.4,
+            weight=2,
+            popup=f"{obs['name']}<br>半径: {obs['radius']}m",
+            tooltip=f"{obs['name']} (半径: {obs['radius']}m)"
+        ).add_to(m)
+    
+    # 图例
+    legend_html = '''
+    <div style="position: fixed; bottom: 20px; right: 20px; z-index: 1000; background-color: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 8px; color: white; font-size: 12px;">
+        <p style="margin: 0;"><span style="color: #00ff00;">●</span> 起点A</p>
+        <p style="margin: 0;"><span style="color: #ff0000;">●</span> 终点B</p>
+        <p style="margin: 0;"><span style="color: #ffff00;">━</span> 航线</p>
+        <p style="margin: 0;"><span style="color: #ff0000;">●</span> 障碍物</p>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+    
+    return m
 
 # ---------------------------- 页面配置 ----------------------------
 st.set_page_config(page_title="无人机地面站系统", layout="wide")
 
-# 侧边栏导航
+# 侧边栏
 st.sidebar.markdown("# 导航")
 page = st.sidebar.radio("功能页面", ["航线规划", "飞行监控"])
 
-# 侧边栏全局设置
 st.sidebar.markdown("---")
 st.sidebar.markdown("# 坐标系设置")
 coord_sys = st.sidebar.selectbox(
@@ -253,199 +318,105 @@ st.session_state.coord_system = coord_sys.split("(")[0]
 st.sidebar.markdown("---")
 st.sidebar.markdown("# 地图控制")
 st.session_state.map_zoom = st.sidebar.slider("缩放级别", 15, 20, st.session_state.map_zoom, 1)
-st.session_state.map_pitch = st.sidebar.slider("倾斜角度", 0, 85, st.session_state.map_pitch, 5)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("## 📖 地图操作说明")
-st.sidebar.markdown("- 🖱️ **鼠标左键拖拽**: 平移地图")
-st.sidebar.markdown("- 🖱️ **鼠标右键拖拽**: 旋转视角")
-st.sidebar.markdown("- 🔍 **鼠标滚轮**: 缩放地图")
-st.sidebar.markdown("- 🟢 **绿色点**: 起点A")
-st.sidebar.markdown("- 🔴 **红色点**: 终点B/障碍物")
-st.sidebar.markdown("- 🟡 **黄色线**: 规划航线")
-st.sidebar.markdown("- 🛰️ **底图**: 卫星影像，可放大查看校园建筑细节")
+st.sidebar.markdown("## 📖 操作说明")
+st.sidebar.markdown("- 🖱️ 鼠标拖拽: 平移")
+st.sidebar.markdown("- 🔍 滚轮: 缩放")
+st.sidebar.markdown("- 🔲 右上角: 全屏")
+st.sidebar.markdown("- 📏 左上角: 测量工具")
 
 # ============================ 航线规划页面 ============================
 if page == "航线规划":
     st.title("🗺️ 航线规划")
-    st.markdown("基于卫星影像的3D无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
+    st.markdown("基于高德卫星影像的无人机航线规划系统")
     
-    # 主控制面板
     col1, col2 = st.columns([1, 1.2])
     
     with col1:
         st.markdown("### 控制面板")
         
-        # 起点A
         st.markdown("#### 起点A")
         col_a1, col_a2 = st.columns(2)
         with col_a1:
-            a_lat = st.number_input(
-                "纬度",
-                value=st.session_state.point_A["lat"],
-                format="%.6f",
-                key="a_lat"
-            )
+            a_lat = st.number_input("纬度", value=st.session_state.point_A["lat"], format="%.6f", key="a_lat")
         with col_a2:
-            a_lng = st.number_input(
-                "经度",
-                value=st.session_state.point_A["lng"],
-                format="%.6f",
-                key="a_lng"
-            )
+            a_lng = st.number_input("经度", value=st.session_state.point_A["lng"], format="%.6f", key="a_lng")
         if st.button("📍 设置A点", use_container_width=True):
             st.session_state.point_A = {"lat": a_lat, "lng": a_lng, "set": True}
-            st.success("✅ 起点A已设置")
             st.rerun()
         
-        # 终点B
         st.markdown("#### 终点B")
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            b_lat = st.number_input(
-                "纬度",
-                value=st.session_state.point_B["lat"],
-                format="%.6f",
-                key="b_lat"
-            )
+            b_lat = st.number_input("纬度", value=st.session_state.point_B["lat"], format="%.6f", key="b_lat")
         with col_b2:
-            b_lng = st.number_input(
-                "经度",
-                value=st.session_state.point_B["lng"],
-                format="%.6f",
-                key="b_lng"
-            )
+            b_lng = st.number_input("经度", value=st.session_state.point_B["lng"], format="%.6f", key="b_lng")
         if st.button("🎯 设置B点", use_container_width=True):
             st.session_state.point_B = {"lat": b_lat, "lng": b_lng, "set": True}
-            st.success("✅ 终点B已设置")
             st.rerun()
         
-        # 飞行参数
         st.markdown("#### 飞行参数")
-        height = st.number_input(
-            "设定飞行高度 (m)",
-            value=st.session_state.flight_height,
-            step=5.0,
-            help="无人机飞行的高度"
-        )
-        st.session_state.flight_height = height
+        st.session_state.flight_height = st.number_input("设定飞行高度 (m)", value=st.session_state.flight_height, step=5.0)
         
-        # 障碍物管理
         st.markdown("#### 障碍物管理")
         with st.expander("➕ 添加新障碍物", expanded=False):
-            obs_name = st.text_input("障碍物名称", "新障碍物")
+            obs_name = st.text_input("名称", "新障碍物")
             col_o1, col_o2 = st.columns(2)
             with col_o1:
                 obs_lat = st.number_input("纬度", value=32.2330, format="%.6f", key="obs_lat")
             with col_o2:
                 obs_lng = st.number_input("经度", value=118.7495, format="%.6f", key="obs_lng")
-            obs_radius = st.number_input("半径 (m)", value=25, step=5, key="obs_radius")
-            if st.button("✅ 确认添加", key="add_obs"):
-                st.session_state.obstacles.append({
-                    "lat": obs_lat,
-                    "lng": obs_lng,
-                    "radius": obs_radius,
-                    "name": obs_name
-                })
-                st.success(f"已添加障碍物: {obs_name}")
+            obs_radius = st.number_input("半径(m)", value=25, step=5)
+            if st.button("✅ 添加"):
+                st.session_state.obstacles.append({"lat": obs_lat, "lng": obs_lng, "radius": obs_radius, "name": obs_name})
                 st.rerun()
     
     with col2:
         st.markdown("### 系统状态")
         
-        # 状态显示卡片
         if st.session_state.point_A["set"]:
-            st.success(f"✅ **A点已设**\n\n📍 纬度: {st.session_state.point_A['lat']:.6f}\n📍 经度: {st.session_state.point_A['lng']:.6f}")
+            st.success(f"✅ **A点已设**\n{st.session_state.point_A['lat']:.6f}, {st.session_state.point_A['lng']:.6f}")
         else:
-            st.warning("❌ **A点未设** - 请输入坐标并点击设置")
+            st.warning("❌ **A点未设**")
         
         if st.session_state.point_B["set"]:
-            st.success(f"✅ **B点已设**\n\n📍 纬度: {st.session_state.point_B['lat']:.6f}\n📍 经度: {st.session_state.point_B['lng']:.6f}")
+            st.success(f"✅ **B点已设**\n{st.session_state.point_B['lat']:.6f}, {st.session_state.point_B['lng']:.6f}")
         else:
-            st.warning("❌ **B点未设** - 请输入坐标并点击设置")
+            st.warning("❌ **B点未设**")
         
-        st.info(f"✈️ **飞行高度**: {st.session_state.flight_height} m")
-        
-        # 计算航线距离
         if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
-            distance = calculate_distance(
-                st.session_state.point_A["lat"], st.session_state.point_A["lng"],
-                st.session_state.point_B["lat"], st.session_state.point_B["lng"]
-            )
-            st.success(f"📏 **航线距离**: {distance:.1f} 米")
+            dist = calculate_distance(a_lat, a_lng, b_lat, b_lng)
+            st.success(f"📏 航线距离: {dist:.1f} 米")
         
-        # 障碍物列表
         if st.session_state.obstacles:
             st.markdown("**🚧 障碍物列表**")
             for i, obs in enumerate(st.session_state.obstacles):
                 col_a, col_b = st.columns([3, 1])
                 with col_a:
-                    st.write(f"{i+1}. {obs['name']} (半径:{obs['radius']}m)")
-                    st.caption(f"   {obs['lat']:.6f}, {obs['lng']:.6f}")
+                    st.write(f"{i+1}. {obs['name']} ({obs['radius']}m)")
                 with col_b:
-                    if st.button("🗑️", key=f"del_{i}"):
+                    if st.button("删除", key=f"del_{i}"):
                         st.session_state.obstacles.pop(i)
                         st.rerun()
     
-    # 3D卫星地图显示
-    st.markdown("### 🛰️ 3D卫星地图")
-    st.markdown("💡 **操作提示**：鼠标左键拖拽平移 | 鼠标右键拖拽旋转视角 | 滚轮缩放 | 底图为卫星影像，可放大查看建筑细节")
+    # 地图显示
+    st.markdown("### 🛰️ 高德卫星地图")
+    st.markdown("💡 鼠标滚轮缩放 | 鼠标拖拽平移 | 右上角全屏 | 左上角测量工具")
     
-    # 创建并显示地图
     try:
-        deck = create_3d_satellite_map()
-        st.pydeck_chart(deck, use_container_width=True)
+        m = create_satellite_map()
+        folium_static(m, width=1100, height=550)
     except Exception as e:
-        st.error(f"地图加载出错: {str(e)}")
-        st.info("请刷新页面重试，或检查网络连接")
-    
-    # 使用说明
-    with st.expander("📖 详细使用说明", expanded=False):
-        st.markdown("""
-        ### 🎯 功能说明
-        
-        **1. 设置起点/终点**
-        - 在左侧控制面板输入经纬度坐标
-        - 点击"设置A点"或"设置B点"按钮
-        - 支持 WGS-84 和 GCJ-02 两种坐标系
-        
-        **2. 飞行参数**
-        - 设置飞行高度（单位：米）
-        
-        **3. 障碍物管理**
-        - 系统预设了校园内的障碍物（教学楼、图书馆、实验楼、食堂、体育馆）
-        - AB点之间分布多个障碍物
-        - 可以添加新的障碍物或删除现有障碍物
-        
-        **4. 坐标系转换**
-        - **WGS-84**：国际标准坐标系（GPS使用）
-        - **GCJ-02**：高德/百度地图使用的坐标系（火星坐标系）
-        - 系统会自动转换坐标进行显示
-        
-        **5. 3D卫星地图操作**
-        - **鼠标左键拖拽**：平移地图
-        - **鼠标右键拖拽**：旋转3D视角
-        - **鼠标滚轮**：缩放地图（可放大到建筑级别）
-        - **鼠标悬停**：查看标记详细信息
-        
-        **6. 地图元素说明**
-        - 🟢 **绿色点**：起点A
-        - 🔴 **红色点**：终点B
-        - 🔴 **红色圆圈**：障碍物
-        - 🟡 **黄色线**：规划航线
-        - 🛰️ **底图**：卫星影像
-        """)
+        st.error(f"地图加载失败: {str(e)}")
 
 # ============================ 飞行监控页面 ============================
 else:
     st.title("🛸 无人机心跳监测系统")
-    st.markdown("模拟无人机每秒发送心跳包，地面站实时监测并绘制折线图，3秒未收到自动报警")
     
-    # 自动刷新
     if st.session_state.running:
         st.markdown('<meta http-equiv="refresh" content="1">', unsafe_allow_html=True)
     
-    # 控制按钮
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🚀 启动模拟", use_container_width=True):
@@ -459,7 +430,6 @@ else:
         if st.button("🛑 停止模拟", use_container_width=True):
             reset_monitor()
     
-    # 心跳生成逻辑
     if st.session_state.running:
         now = time.time()
         last = st.session_state.last_ts
@@ -468,62 +438,23 @@ else:
         else:
             diff = now - last
             if diff >= 1.0:
-                n = min(int(diff), 5)
-                for i in range(n):
-                    new_seq = st.session_state.seq + 1
-                    sim_ts = last + (i + 1)
-                    add_heartbeat(new_seq, sim_ts)
+                for i in range(min(int(diff), 5)):
+                    add_heartbeat(st.session_state.seq + 1, last + i + 1)
         
-        # 超时检测
         if st.session_state.last_ts and (time.time() - st.session_state.last_ts) > 3.0:
-            st.session_state.alert_msg = f"⚠️ 连接超时！已 {time.time() - st.session_state.last_ts:.1f} 秒未收到心跳"
-        else:
-            st.session_state.alert_msg = ""
-    
-    # 状态显示
-    col_status, col_alert = st.columns(2)
-    with col_status:
-        st.metric("📡 最新心跳序号", st.session_state.seq if st.session_state.seq > 0 else "—")
-        status_text = "✈️ 飞行中" if st.session_state.running else "🛬 已停止"
-        st.write(f"**无人机状态：{status_text}**")
-    
-    with col_alert:
-        if st.session_state.alert_msg:
-            st.error(st.session_state.alert_msg)
+            st.error(f"⚠️ 超时！已 {time.time() - st.session_state.last_ts:.1f} 秒无心跳")
         else:
             st.success("✅ 连接正常")
     
-    # 实时心跳指示器
-    if st.session_state.running and st.session_state.last_ts:
-        time_since_last = time.time() - st.session_state.last_ts
-        if time_since_last < 1:
-            st.success(f"💓 最后心跳: {time_since_last:.1f}秒前")
-        elif time_since_last < 3:
-            st.warning(f"💓 最后心跳: {time_since_last:.1f}秒前")
-        else:
-            st.error(f"💔 最后心跳: {time_since_last:.1f}秒前")
+    st.metric("最新心跳序号", st.session_state.seq if st.session_state.seq > 0 else "—")
     
-    # 折线图
     if st.session_state.records:
         df = pd.DataFrame(st.session_state.records, columns=["序号", "时间戳"])
         df["时间"] = pd.to_datetime(df["时间戳"], unit="s")
-        df = df.sort_values("时间")
-        st.subheader("📈 心跳序号变化趋势")
-        st.line_chart(df.set_index("时间")["序号"], use_container_width=True)
-    else:
-        st.info("📭 尚未收到任何心跳包，请点击「启动模拟」")
-    
-    # 表格
-    if st.session_state.records:
-        df_table = pd.DataFrame(st.session_state.records, columns=["心跳序号", "时间戳"])
-        df_table["接收时间"] = df_table["时间戳"].apply(lambda x: datetime.fromtimestamp(x).strftime("%H:%M:%S"))
-        df_table["延迟(ms)"] = df_table["时间戳"].diff().fillna(0) * 1000
-        df_table = df_table[["心跳序号", "接收时间", "延迟(ms)"]]
-        st.subheader("📋 心跳包记录（最近20条）")
-        st.dataframe(df_table, use_container_width=True, height=400)
-    else:
-        st.info("📋 暂无记录")
+        st.line_chart(df.set_index("时间")["序号"])
+        
+        df["接收时间"] = df["时间戳"].apply(lambda x: datetime.fromtimestamp(x).strftime("%H:%M:%S"))
+        st.dataframe(df[["序号", "接收时间"]], use_container_width=True)
 
-# 底部信息
 st.markdown("---")
-st.markdown("© 2024 无人机地面站系统 | 底图: 卫星影像 | 支持 WGS-84/GCJ-02 坐标系转换 | 实时心跳监测")
+st.markdown("© 无人机地面站 | 高德卫星图 | WGS-84/GCJ-02 坐标转换")
