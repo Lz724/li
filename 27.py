@@ -52,7 +52,6 @@ def convert_to_wgs84(lat, lng, src_system):
 
 # ---------------------------- 距离计算函数 ----------------------------
 def calculate_distance(lat1, lng1, lat2, lng2):
-    """使用 Haversine 公式计算两点间距离（单位：米）"""
     R = 6371000
     lat1_rad = math.radians(lat1)
     lat2_rad = math.radians(lat2)
@@ -86,7 +85,7 @@ def init_state():
         st.session_state.flight_height = 50.0
     
     if "obstacles" not in st.session_state:
-        # 校园内障碍物（WGS-84 坐标）
+        # 校园内障碍物（位于AB点之间）
         st.session_state.obstacles = [
             {"lat": 32.2328, "lng": 118.7485, "radius": 30, "name": "教学楼"},
             {"lat": 32.2335, "lng": 118.7492, "radius": 35, "name": "图书馆"},
@@ -99,7 +98,7 @@ def init_state():
         st.session_state.map_zoom = 16
     
     if "map_pitch" not in st.session_state:
-        st.session_state.map_pitch = 0  # 0度表示2D俯视角度
+        st.session_state.map_pitch = 45  # 3D倾斜角度
 
 init_state()
 
@@ -118,14 +117,14 @@ def reset_monitor():
     st.session_state.records = []
     st.session_state.alert_msg = ""
 
-# ---------------------------- 卫星地图创建函数（使用 pydeck + 卫星瓦片）------------------------
-def create_satellite_map():
-    """创建使用卫星影像的 pydeck 地图"""
+# ---------------------------- 3D卫星地图创建函数 ----------------------------
+def create_3d_satellite_map():
+    """创建使用卫星影像的3D地图"""
     
     layers = []
     scatter_data = []
     
-    # 获取 A、B 点的 WGS-84 坐标用于地图显示
+    # 获取 A、B 点的 WGS-84 坐标
     a_wgs_lng, a_wgs_lat = None, None
     b_wgs_lng, b_wgs_lat = None, None
     
@@ -139,9 +138,8 @@ def create_satellite_map():
         scatter_data.append({
             "lng": a_wgs_lng,
             "lat": a_wgs_lat,
-            "type": "A",
             "color": [0, 255, 0],
-            "size": 100,
+            "size": 80,
             "name": f"起点A\n纬度: {st.session_state.point_A['lat']:.6f}\n经度: {st.session_state.point_A['lng']:.6f}"
         })
     
@@ -155,20 +153,17 @@ def create_satellite_map():
         scatter_data.append({
             "lng": b_wgs_lng,
             "lat": b_wgs_lat,
-            "type": "B",
             "color": [255, 0, 0],
-            "size": 100,
+            "size": 80,
             "name": f"终点B\n纬度: {st.session_state.point_B['lat']:.6f}\n经度: {st.session_state.point_B['lng']:.6f}"
         })
     
-    # 添加障碍物（红色半透明）
+    # 添加障碍物（红色半透明圆）
     for obs in st.session_state.obstacles:
-        # 障碍物坐标转换为 WGS-84
         obs_wgs_lng, obs_wgs_lat = convert_to_wgs84(obs["lat"], obs["lng"], "WGS-84")
         scatter_data.append({
             "lng": obs_wgs_lng,
             "lat": obs_wgs_lat,
-            "type": "obstacle",
             "color": [255, 0, 0],
             "size": obs["radius"] * 2,
             "name": f"{obs['name']}\n半径: {obs['radius']}m"
@@ -187,13 +182,12 @@ def create_satellite_map():
             auto_highlight=True,
             radius_scale=1,
             radius_min_pixels=5,
-            radius_max_pixels=80
+            radius_max_pixels=60
         )
         layers.append(scatter_layer)
     
-    # 航线图层
+    # 航线图层（黄色）
     if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
-        # 地面航线（黄色）
         line_data = [{
             "start_lng": a_wgs_lng,
             "start_lat": a_wgs_lat,
@@ -207,9 +201,8 @@ def create_satellite_map():
             get_source_position=["start_lng", "start_lat"],
             get_target_position=["end_lng", "end_lat"],
             get_color=[255, 255, 0],
-            get_width=5,
-            pickable=True,
-            tooltip=f"航线 | 高度: {st.session_state.flight_height}m"
+            get_width=4,
+            pickable=True
         )
         layers.append(line_layer)
     
@@ -221,7 +214,7 @@ def create_satellite_map():
     else:
         center_lng, center_lat = 118.7492, 32.2332
     
-    # 视图设置（2D俯视角度，方便查看卫星图）
+    # 视图设置（3D视角）
     view_state = pdk.ViewState(
         longitude=center_lng,
         latitude=center_lat,
@@ -234,7 +227,7 @@ def create_satellite_map():
     deck = pdk.Deck(
         layers=layers,
         initial_view_state=view_state,
-        map_style="satellite",  # 使用卫星地图
+        map_style="satellite",
         tooltip={"text": "{name}"}
     )
     
@@ -244,12 +237,12 @@ def create_satellite_map():
 st.set_page_config(page_title="无人机地面站系统", layout="wide")
 
 # 侧边栏导航
-st.sidebar.title("导航")
+st.sidebar.markdown("# 导航")
 page = st.sidebar.radio("功能页面", ["航线规划", "飞行监控"])
 
 # 侧边栏全局设置
 st.sidebar.markdown("---")
-st.sidebar.subheader("坐标系设置")
+st.sidebar.markdown("# 坐标系设置")
 coord_sys = st.sidebar.selectbox(
     "输入坐标系",
     ["WGS-84", "GCJ-02(高德/百度)"],
@@ -257,81 +250,78 @@ coord_sys = st.sidebar.selectbox(
 )
 st.session_state.coord_system = coord_sys.split("(")[0]
 
-st.sidebar.subheader("地图控制")
-st.session_state.map_zoom = st.sidebar.slider("缩放级别", 14, 20, st.session_state.map_zoom, 1)
+st.sidebar.markdown("---")
+st.sidebar.markdown("# 地图控制")
+st.session_state.map_zoom = st.sidebar.slider("缩放级别", 15, 20, st.session_state.map_zoom, 1)
 st.session_state.map_pitch = st.sidebar.slider("倾斜角度", 0, 85, st.session_state.map_pitch, 5)
 
-st.sidebar.info("""
-💡 **地图操作说明**:
-- 🖱️ 鼠标左键拖拽: 平移地图
-- 🖱️ 鼠标右键拖拽: 旋转视角
-- 🔍 鼠标滚轮: 缩放地图
-- 🗺️ 底图: 卫星影像
-""")
+st.sidebar.markdown("---")
+st.sidebar.markdown("## 📖 地图操作说明")
+st.sidebar.markdown("- 🖱️ **鼠标左键拖拽**: 平移地图")
+st.sidebar.markdown("- 🖱️ **鼠标右键拖拽**: 旋转视角")
+st.sidebar.markdown("- 🔍 **鼠标滚轮**: 缩放地图")
+st.sidebar.markdown("- 🟢 **绿色点**: 起点A")
+st.sidebar.markdown("- 🔴 **红色点**: 终点B/障碍物")
+st.sidebar.markdown("- 🟡 **黄色线**: 规划航线")
+st.sidebar.markdown("- 🛰️ **底图**: 卫星影像，可放大查看校园建筑细节")
 
 # ============================ 航线规划页面 ============================
 if page == "航线规划":
     st.title("🗺️ 航线规划")
-    st.markdown("基于卫星影像的无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
+    st.markdown("基于卫星影像的3D无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
     
     # 主控制面板
     col1, col2 = st.columns([1, 1.2])
     
     with col1:
-        st.subheader("控制面板")
+        st.markdown("### 控制面板")
         
         # 起点A
-        st.write("#### 起点A")
-        a_lat = st.number_input(
-            "纬度",
-            value=st.session_state.point_A["lat"],
-            format="%.6f",
-            key="a_lat"
-        )
-        a_lng = st.number_input(
-            "经度",
-            value=st.session_state.point_A["lng"],
-            format="%.6f",
-            key="a_lng"
-        )
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("📍 设置A点", use_container_width=True):
-                st.session_state.point_A = {"lat": a_lat, "lng": a_lng, "set": True}
-                st.success("✅ 起点A已设置")
-                st.rerun()
-        with col_btn2:
-            if st.button("🗑️ 清除A点", use_container_width=True):
-                st.session_state.point_A["set"] = False
-                st.rerun()
+        st.markdown("#### 起点A")
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            a_lat = st.number_input(
+                "纬度",
+                value=st.session_state.point_A["lat"],
+                format="%.6f",
+                key="a_lat"
+            )
+        with col_a2:
+            a_lng = st.number_input(
+                "经度",
+                value=st.session_state.point_A["lng"],
+                format="%.6f",
+                key="a_lng"
+            )
+        if st.button("📍 设置A点", use_container_width=True):
+            st.session_state.point_A = {"lat": a_lat, "lng": a_lng, "set": True}
+            st.success("✅ 起点A已设置")
+            st.rerun()
         
         # 终点B
-        st.write("#### 终点B")
-        b_lat = st.number_input(
-            "纬度",
-            value=st.session_state.point_B["lat"],
-            format="%.6f",
-            key="b_lat"
-        )
-        b_lng = st.number_input(
-            "经度",
-            value=st.session_state.point_B["lng"],
-            format="%.6f",
-            key="b_lng"
-        )
-        col_btn3, col_btn4 = st.columns(2)
-        with col_btn3:
-            if st.button("🎯 设置B点", use_container_width=True):
-                st.session_state.point_B = {"lat": b_lat, "lng": b_lng, "set": True}
-                st.success("✅ 终点B已设置")
-                st.rerun()
-        with col_btn4:
-            if st.button("🗑️ 清除B点", use_container_width=True):
-                st.session_state.point_B["set"] = False
-                st.rerun()
+        st.markdown("#### 终点B")
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            b_lat = st.number_input(
+                "纬度",
+                value=st.session_state.point_B["lat"],
+                format="%.6f",
+                key="b_lat"
+            )
+        with col_b2:
+            b_lng = st.number_input(
+                "经度",
+                value=st.session_state.point_B["lng"],
+                format="%.6f",
+                key="b_lng"
+            )
+        if st.button("🎯 设置B点", use_container_width=True):
+            st.session_state.point_B = {"lat": b_lat, "lng": b_lng, "set": True}
+            st.success("✅ 终点B已设置")
+            st.rerun()
         
         # 飞行参数
-        st.write("#### 飞行参数")
+        st.markdown("#### 飞行参数")
         height = st.number_input(
             "设定飞行高度 (m)",
             value=st.session_state.flight_height,
@@ -341,13 +331,13 @@ if page == "航线规划":
         st.session_state.flight_height = height
         
         # 障碍物管理
-        st.write("#### 障碍物管理")
+        st.markdown("#### 障碍物管理")
         with st.expander("➕ 添加新障碍物", expanded=False):
             obs_name = st.text_input("障碍物名称", "新障碍物")
-            col_obs1, col_obs2 = st.columns(2)
-            with col_obs1:
+            col_o1, col_o2 = st.columns(2)
+            with col_o1:
                 obs_lat = st.number_input("纬度", value=32.2330, format="%.6f", key="obs_lat")
-            with col_obs2:
+            with col_o2:
                 obs_lng = st.number_input("经度", value=118.7495, format="%.6f", key="obs_lng")
             obs_radius = st.number_input("半径 (m)", value=25, step=5, key="obs_radius")
             if st.button("✅ 确认添加", key="add_obs"):
@@ -361,7 +351,7 @@ if page == "航线规划":
                 st.rerun()
     
     with col2:
-        st.subheader("系统状态")
+        st.markdown("### 系统状态")
         
         # 状态显示卡片
         if st.session_state.point_A["set"]:
@@ -375,7 +365,6 @@ if page == "航线规划":
             st.warning("❌ **B点未设** - 请输入坐标并点击设置")
         
         st.info(f"✈️ **飞行高度**: {st.session_state.flight_height} m")
-        st.info(f"🗺️ **当前坐标系**: {st.session_state.coord_system}")
         
         # 计算航线距离
         if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
@@ -387,7 +376,7 @@ if page == "航线规划":
         
         # 障碍物列表
         if st.session_state.obstacles:
-            st.write("**🚧 障碍物列表**")
+            st.markdown("**🚧 障碍物列表**")
             for i, obs in enumerate(st.session_state.obstacles):
                 col_a, col_b = st.columns([3, 1])
                 with col_a:
@@ -398,16 +387,13 @@ if page == "航线规划":
                         st.session_state.obstacles.pop(i)
                         st.rerun()
     
-    # 卫星地图显示
-    st.subheader("🛰️ 卫星地图")
-    st.markdown("💡 **操作提示**：")
-    st.markdown("- 🔍 **鼠标滚轮**: 缩放地图 | 🖱️ **鼠标左键拖拽**: 平移地图 | 🖱️ **鼠标右键拖拽**: 旋转视角")
-    st.markdown("- 🟢 **绿色点**: 起点A | 🔴 **红色点**: 终点B/障碍物 | 🟡 **黄色线**: 规划航线")
-    st.markdown("- 底图使用 **卫星影像**，可放大查看校园建筑细节")
+    # 3D卫星地图显示
+    st.markdown("### 🛰️ 3D卫星地图")
+    st.markdown("💡 **操作提示**：鼠标左键拖拽平移 | 鼠标右键拖拽旋转视角 | 滚轮缩放 | 底图为卫星影像，可放大查看建筑细节")
     
     # 创建并显示地图
     try:
-        deck = create_satellite_map()
+        deck = create_3d_satellite_map()
         st.pydeck_chart(deck, use_container_width=True)
     except Exception as e:
         st.error(f"地图加载出错: {str(e)}")
@@ -425,29 +411,29 @@ if page == "航线规划":
         
         **2. 飞行参数**
         - 设置飞行高度（单位：米）
-        - 航线会显示在规划路径上
         
         **3. 障碍物管理**
         - 系统预设了校园内的障碍物（教学楼、图书馆、实验楼、食堂、体育馆）
-        - 可以添加新的障碍物（需要输入名称、经纬度、半径）
-        - 可以删除现有障碍物
+        - AB点之间分布多个障碍物
+        - 可以添加新的障碍物或删除现有障碍物
         
         **4. 坐标系转换**
         - **WGS-84**：国际标准坐标系（GPS使用）
         - **GCJ-02**：高德/百度地图使用的坐标系（火星坐标系）
         - 系统会自动转换坐标进行显示
         
-        **5. 卫星地图操作**
+        **5. 3D卫星地图操作**
         - **鼠标左键拖拽**：平移地图
         - **鼠标右键拖拽**：旋转3D视角
-        - **鼠标滚轮**：缩放地图
-        - **鼠标悬停**：查看详细信息
+        - **鼠标滚轮**：缩放地图（可放大到建筑级别）
+        - **鼠标悬停**：查看标记详细信息
         
         **6. 地图元素说明**
         - 🟢 **绿色点**：起点A
         - 🔴 **红色点**：终点B
+        - 🔴 **红色圆圈**：障碍物
         - 🟡 **黄色线**：规划航线
-        - 🔴 **红色圆圈**：障碍物（显示名称和半径）
+        - 🛰️ **底图**：卫星影像
         """)
 
 # ============================ 飞行监控页面 ============================
