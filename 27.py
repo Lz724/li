@@ -1,6 +1,5 @@
 """
-无人机地面站系统 - 纯高德地图版本
-包含调试功能，帮助排查 Key 问题
+无人机地面站系统 - 高德地图版本
 """
 
 import streamlit as st
@@ -9,7 +8,7 @@ import time
 import math
 from datetime import datetime
 
-# ============================ 坐标系转换算法 ============================
+# ============================ 坐标系转换 ============================
 
 def transform_lat(lng, lat):
     ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * math.sqrt(abs(lng))
@@ -102,8 +101,6 @@ def init_state():
 
 init_state()
 
-# ============================ 心跳函数 ============================
-
 def add_heartbeat(seq, ts):
     st.session_state.records.insert(0, (seq, ts))
     if len(st.session_state.records) > 20:
@@ -118,12 +115,12 @@ def reset_monitor():
     st.session_state.records = []
     st.session_state.alert_msg = ""
 
-# ============================ 生成高德地图 HTML ============================
+# ============================ 生成地图 HTML ============================
 
 def generate_map_html():
-    """生成高德地图 HTML（带错误检测）"""
+    """生成高德地图 HTML"""
     
-    # 获取显示坐标
+    # 获取坐标
     if st.session_state.point_A["set"]:
         a_lng, a_lat = convert_to_gcj02(
             st.session_state.point_A["lat"], 
@@ -142,7 +139,7 @@ def generate_map_html():
     else:
         b_lng, b_lat = None, None
     
-    # 障碍物坐标转换
+    # 障碍物
     obstacles_data = []
     for obs in st.session_state.obstacles:
         o_lng, o_lat = convert_to_gcj02(obs["lat"], obs["lng"], "WGS-84")
@@ -153,7 +150,7 @@ def generate_map_html():
             "name": obs["name"]
         })
     
-    # 计算航线距离
+    # 距离
     distance = 0
     if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
         distance = calculate_distance(
@@ -161,7 +158,7 @@ def generate_map_html():
             st.session_state.point_B["lat"], st.session_state.point_B["lng"]
         )
     
-    # 地图中心
+    # 中心点
     if a_lat:
         center_lat, center_lng = a_lat, a_lng
     elif b_lat:
@@ -169,7 +166,9 @@ def generate_map_html():
     else:
         center_lat, center_lng = 32.2332, 118.7492
     
-    # 生成 HTML
+    # 安全处理 Key
+    api_key = st.session_state.amap_key.strip()
+    
     html_code = f'''
     <!DOCTYPE html>
     <html>
@@ -185,12 +184,12 @@ def generate_map_html():
                 position: absolute;
                 bottom: 20px;
                 right: 20px;
-                background: rgba(0,0,0,0.75);
+                background: rgba(0,0,0,0.7);
                 color: white;
-                padding: 10px 15px;
+                padding: 8px 12px;
                 border-radius: 8px;
                 z-index: 1000;
-                font-size: 12px;
+                font-size: 11px;
                 pointer-events: none;
             }}
             .distance-label {{
@@ -200,137 +199,107 @@ def generate_map_html():
                 transform: translateX(-50%);
                 background: rgba(0,0,0,0.7);
                 color: #ffff00;
-                padding: 6px 12px;
+                padding: 5px 10px;
                 border-radius: 20px;
                 z-index: 1000;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: bold;
                 pointer-events: none;
                 white-space: nowrap;
-            }}
-            .error-msg {{
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                background: rgba(255,0,0,0.8);
-                color: white;
-                padding: 15px 25px;
-                border-radius: 8px;
-                z-index: 2000;
-                text-align: center;
             }}
         </style>
     </head>
     <body>
         <div id="container"></div>
-        <div class="distance-label">
-            ✈️ 航线距离: {distance:.0f}米 | 高度: {st.session_state.flight_height}m
-        </div>
+        <div class="distance-label">✈️ 航线距离: {distance:.0f}m | 高度: {st.session_state.flight_height}m</div>
         <div class="legend">
-            <p><strong>图例</strong></p>
-            <p><span style="color:#00ff00;">●</span> 起点A</p>
-            <p><span style="color:#ff0000;">●</span> 终点B</p>
-            <p><span style="color:#ffff00;">━</span> 航线</p>
-            <p><span style="color:#ff0000;">●</span> 障碍物</p>
+            <p><span style="color:#0f0;">●</span> A点 <span style="color:#f00;">●</span> B点 <span style="color:#ff0;">━</span> 航线 <span style="color:#f00;">●</span> 障碍物</p>
         </div>
         
-        <script src="https://webapi.amap.com/maps?v=2.0&key={st.session_state.amap_key}"></script>
+        <script>
+        window._AMapSecurityConfig = {{
+            securityJsCode: ''
+        }};
+        </script>
+        <script src="https://webapi.amap.com/maps?v=2.0&key={api_key}"></script>
         <script>
         var map;
         
-        function initMap() {{
+        function loadMap() {{
             try {{
                 map = new AMap.Map('container', {{
                     center: [{center_lng}, {center_lat}],
                     zoom: {st.session_state.map_zoom},
                     viewMode: '3D',
-                    pitch: 45
+                    pitch: 50
                 }});
                 
                 map.addControl(new AMap.Scale());
                 map.addControl(new AMap.ToolBar());
-                map.addControl(new AMap.ControlBar());
-                
-                '''
+        '''
     
     if a_lat:
         html_code += f'''
-                var aMarker = new AMap.Marker({{
+                new AMap.Marker({{
                     position: [{a_lng}, {a_lat}],
-                    title: '起点A',
-                    label: {{
-                        content: '<div style="background:#00aa00;color:white;padding:2px 6px;border-radius:4px;">🚁 A点</div>',
-                        offset: new AMap.Pixel(0, -30)
-                    }}
-                }});
-                aMarker.setMap(map);
-                
+                    label: {{ content: '🚁 A', offset: new AMap.Pixel(0, -20) }}
+                }}).setMap(map);
                 new AMap.Circle({{
                     center: [{a_lng}, {a_lat}],
-                    radius: 25,
-                    strokeColor: '#00ff00',
-                    fillColor: '#00ff00',
-                    fillOpacity: 0.15
+                    radius: 20,
+                    strokeColor: '#0f0',
+                    fillColor: '#0f0',
+                    fillOpacity: 0.2
                 }}).setMap(map);
         '''
     
     if b_lat:
         html_code += f'''
-                var bMarker = new AMap.Marker({{
+                new AMap.Marker({{
                     position: [{b_lng}, {b_lat}],
-                    title: '终点B',
-                    label: {{
-                        content: '<div style="background:#cc0000;color:white;padding:2px 6px;border-radius:4px;">🎯 B点</div>',
-                        offset: new AMap.Pixel(0, -30)
-                    }}
-                }});
-                bMarker.setMap(map);
-                
+                    label: {{ content: '🎯 B', offset: new AMap.Pixel(0, -20) }}
+                }}).setMap(map);
                 new AMap.Circle({{
                     center: [{b_lng}, {b_lat}],
-                    radius: 25,
-                    strokeColor: '#ff0000',
-                    fillColor: '#ff0000',
-                    fillOpacity: 0.15
+                    radius: 20,
+                    strokeColor: '#f00',
+                    fillColor: '#f00',
+                    fillOpacity: 0.2
                 }}).setMap(map);
         '''
     
     if a_lat and b_lat:
         html_code += f'''
-                var line = new AMap.Polyline({{
+                new AMap.Polyline({{
                     path: [[{a_lng}, {a_lat}], [{b_lng}, {b_lat}]],
-                    strokeColor: '#ffff00',
-                    strokeWeight: 5
-                }});
-                line.setMap(map);
+                    strokeColor: '#ff0',
+                    strokeWeight: 4
+                }}).setMap(map);
         '''
     
-    for i, obs in enumerate(obstacles_data):
+    for obs in obstacles_data:
         html_code += f'''
                 new AMap.Circle({{
                     center: [{obs["lng"]}, {obs["lat"]}],
                     radius: {obs["radius"]},
-                    strokeColor: '#ff4444',
-                    fillColor: '#ff0000',
-                    fillOpacity: 0.35
+                    strokeColor: '#f44',
+                    fillColor: '#f00',
+                    fillOpacity: 0.3
                 }}).setMap(map);
-                
                 new AMap.Marker({{
                     position: [{obs["lng"]}, {obs["lat"]}],
-                    content: '<div style="background:#ff0000;color:white;padding:2px 5px;border-radius:10px;font-size:10px;">⚠️ {obs["name"]}</div>',
+                    content: '<div style="background:#f00;color:white;padding:0 4px;border-radius:10px;font-size:10px;">{obs["name"]}</div>',
                     offset: new AMap.Pixel(0, -15)
                 }}).setMap(map);
         '''
     
     html_code += '''
             } catch(e) {
-                document.getElementById('container').innerHTML = '<div class="error-msg">地图加载失败<br>请检查 API Key 是否正确</div>';
-                console.error(e);
+                document.getElementById('container').innerHTML = '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#f00;color:white;padding:20px;border-radius:8px;">地图加载失败<br>请检查API Key</div>';
             }
         }
         
-        window.onload = initMap;
+        window.onload = loadMap;
         </script>
     </body>
     </html>
@@ -338,7 +307,7 @@ def generate_map_html():
     
     return html_code
 
-# ============================ 页面配置 ============================
+# ============================ 页面 ============================
 
 st.set_page_config(page_title="无人机地面站系统", layout="wide")
 
@@ -351,18 +320,18 @@ amap_key_input = st.sidebar.text_input(
     "API Key",
     value=st.session_state.amap_key,
     type="password",
-    help="获取地址: https://lbs.amap.com/"
+    help="获取: https://lbs.amap.com/"
 )
 if amap_key_input:
     st.session_state.amap_key = amap_key_input
 
-# API Key 验证提示
+# 验证 Key
 if not st.session_state.amap_key:
-    st.sidebar.error("❌ 请输入高德地图 API Key")
-elif len(st.session_state.amap_key) < 20:
-    st.sidebar.warning("⚠️ API Key 长度异常，请检查是否正确")
+    st.sidebar.error("❌ 请输入 API Key")
+elif len(st.session_state.amap_key) < 30:
+    st.sidebar.warning(f"⚠️ Key 长度 {len(st.session_state.amap_key)}，可能不完整")
 else:
-    st.sidebar.success("✅ API Key 已设置")
+    st.sidebar.success(f"✅ Key 已设置 ({len(st.session_state.amap_key)}位)")
 
 st.sidebar.markdown("---")
 
@@ -386,25 +355,18 @@ st.sidebar.markdown("- 🖱️ 右键拖拽: 旋转")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("📋 功能页面", ["🗺️ 航线规划", "💓 飞行监控"])
 
-# ============================ 航线规划页面 ============================
+# ============================ 航线规划 ============================
 
 if page == "🗺️ 航线规划":
     st.title("🗺️ 无人机航线规划系统")
     
     if not st.session_state.amap_key:
-        st.error("⚠️ 请先在左侧边栏输入高德地图 API Key！")
-        with st.expander("📖 如何获取高德地图 API Key？"):
-            st.markdown("""
-            ### 步骤：
-            1. 访问 **https://lbs.amap.com/**
-            2. 注册/登录账号
-            3. 进入「控制台」→「应用管理」→「我的应用」
-            4. 点击「创建新应用」
-            5. 应用名称填写「无人机地面站」
-            6. 选择服务类型：「Web端(JS API)」
-            7. 创建成功后复制 Key
-            """)
+        st.error("⚠️ 请先在左侧边栏输入高德地图 API Key")
         st.stop()
+    
+    if len(st.session_state.amap_key) < 30:
+        st.warning("⚠️ API Key 长度异常，请确认是否正确复制了完整的 Key")
+        st.info("正确的 Key 应该是一串约 32 位的字符")
     
     col1, col2 = st.columns([1, 1.2])
     
@@ -485,7 +447,6 @@ if page == "🗺️ 航线规划":
                         st.rerun()
     
     st.markdown("### 🗺️ 高德3D地图")
-    st.info("💡 鼠标拖拽平移 | 滚轮缩放 | 右键拖拽旋转")
     
     try:
         map_html = generate_map_html()
@@ -493,11 +454,10 @@ if page == "🗺️ 航线规划":
     except Exception as e:
         st.error(f"地图加载失败: {str(e)}")
 
-# ============================ 飞行监控页面 ============================
+# ============================ 飞行监控 ============================
 
 else:
     st.title("🛸 无人机心跳监测系统")
-    st.markdown("每秒发送心跳包，3秒未收到自动报警")
     
     if st.session_state.running:
         st.markdown('<meta http-equiv="refresh" content="1">', unsafe_allow_html=True)
@@ -536,23 +496,13 @@ else:
         st.metric("最新心跳序号", st.session_state.seq or "—")
         status = "✈️ 飞行中" if st.session_state.running else "🛬 已停止"
         st.write(f"状态: {status}")
-    with col2:
-        if st.session_state.running and st.session_state.last_ts:
-            since = time.time() - st.session_state.last_ts
-            if since < 1:
-                st.success(f"💓 最后心跳: {since:.1f}秒前")
-            elif since < 3:
-                st.warning(f"💓 最后心跳: {since:.1f}秒前")
-            else:
-                st.error(f"💔 最后心跳: {since:.1f}秒前")
     
     if st.session_state.records:
         df = pd.DataFrame(st.session_state.records, columns=["序号", "时间戳"])
         df["时间"] = pd.to_datetime(df["时间戳"], unit="s")
         st.line_chart(df.set_index("时间")["序号"])
-        
         df["接收时间"] = df["时间戳"].apply(lambda x: datetime.fromtimestamp(x).strftime("%H:%M:%S"))
         st.dataframe(df[["序号", "接收时间"]])
 
 st.markdown("---")
-st.markdown("© 无人机地面站 | 高德地图 | WGS-84/GCJ-02 坐标转换")
+st.markdown("© 无人机地面站 | 高德地图")
