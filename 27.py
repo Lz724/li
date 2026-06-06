@@ -1,6 +1,6 @@
 """
-无人机地面站系统 - 纯Streamlit版本
-无需任何地图库，使用表格和简化示意图显示
+无人机地面站系统 - 3D地图版本
+使用 pydeck 实现 3D 地图显示
 """
 
 import streamlit as st
@@ -8,6 +8,8 @@ import pandas as pd
 import time
 import math
 from datetime import datetime
+import pydeck as pdk
+import numpy as np
 
 # ============================ 坐标系转换算法 ============================
 
@@ -52,12 +54,12 @@ def out_of_china(lng, lat):
     """判断是否在中国境外"""
     return not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271)
 
-def convert_for_display(lat, lng, src_system):
-    """转换为地图显示坐标（高德使用 GCJ-02）"""
+def convert_to_wgs84(lat, lng, src_system):
+    """转换为 WGS-84 用于地图显示"""
     if src_system == "WGS-84":
-        return wgs84_to_gcj02(lng, lat)
-    else:
         return lng, lat
+    else:
+        return gcj02_to_wgs84(lng, lat)
 
 # ============================ 距离计算 ============================
 
@@ -109,6 +111,9 @@ def init_state():
     
     if "map_zoom" not in st.session_state:
         st.session_state.map_zoom = 16
+    
+    if "map_pitch" not in st.session_state:
+        st.session_state.map_pitch = 45  # 3D 倾斜角度
 
 init_state()
 
@@ -130,150 +135,119 @@ def reset_monitor():
     st.session_state.records = []
     st.session_state.alert_msg = ""
 
-# ============================ 显示简化地图（ASCII风格） ============================
+# ============================ 创建 3D 地图 ============================
 
-def display_ascii_map():
-    """显示ASCII风格的地图示意图"""
+def create_3d_map():
+    """创建 3D 地图"""
     
-    # 获取所有点的坐标
-    all_lats = []
-    all_lngs = []
-    points_info = []
+    scatter_data = []
     
+    # 添加 A 点（绿色）
     if st.session_state.point_A["set"]:
-        all_lats.append(st.session_state.point_A["lat"])
-        all_lngs.append(st.session_state.point_A["lng"])
-        points_info.append({"type": "A", "lat": st.session_state.point_A["lat"], "lng": st.session_state.point_A["lng"], "name": "起点A"})
-    
-    if st.session_state.point_B["set"]:
-        all_lats.append(st.session_state.point_B["lat"])
-        all_lngs.append(st.session_state.point_B["lng"])
-        points_info.append({"type": "B", "lat": st.session_state.point_B["lat"], "lng": st.session_state.point_B["lng"], "name": "终点B"})
-    
-    for obs in st.session_state.obstacles:
-        all_lats.append(obs["lat"])
-        all_lngs.append(obs["lng"])
-        points_info.append({"type": "O", "lat": obs["lat"], "lng": obs["lng"], "name": obs["name"]})
-    
-    if not all_lats:
-        st.info("请先设置起点或终点")
-        return
-    
-    # 计算范围
-    min_lat, max_lat = min(all_lats), max(all_lats)
-    min_lng, max_lng = min(all_lngs), max(all_lngs)
-    
-    # 添加边距
-    lat_margin = (max_lat - min_lat) * 0.1 if max_lat - min_lat > 0 else 0.001
-    lng_margin = (max_lng - min_lng) * 0.1 if max_lng - min_lng > 0 else 0.001
-    
-    min_lat -= lat_margin
-    max_lat += lat_margin
-    min_lng -= lng_margin
-    max_lng += lng_margin
-    
-    # 创建网格
-    grid_size = 20
-    lat_step = (max_lat - min_lat) / grid_size
-    lng_step = (max_lng - min_lng) / grid_size
-    
-    map_grid = [["  " for _ in range(grid_size)] for _ in range(grid_size)]
-    
-    # 标记点
-    for point in points_info:
-        lat_idx = int((point["lat"] - min_lat) / lat_step)
-        lng_idx = int((point["lng"] - min_lng) / lng_step)
-        if 0 <= lat_idx < grid_size and 0 <= lng_idx < grid_size:
-            if point["type"] == "A":
-                map_grid[lat_idx][lng_idx] = "A "
-            elif point["type"] == "B":
-                map_grid[lat_idx][lng_idx] = "B "
-            else:
-                if map_grid[lat_idx][lng_idx] == "  ":
-                    map_grid[lat_idx][lng_idx] = "● "
-    
-    # 显示地图
-    st.markdown("### 🗺️ 相对位置示意图")
-    st.markdown("```")
-    st.markdown(f"纬度范围: {min_lat:.6f} → {max_lat:.6f}")
-    st.markdown(f"经度范围: {min_lng:.6f} → {max_lng:.6f}")
-    st.markdown("")
-    
-    # 添加北向指示
-    st.markdown("北 ↑")
-    
-    # 显示网格地图
-    for i in range(grid_size - 1, -1, -1):
-        row_str = "".join(map_grid[i])
-        st.markdown(row_str)
-    
-    st.markdown("```")
-    st.caption("图例: A=起点, B=终点, ●=障碍物 | 北在上方")
-    
-    # 添加方位说明
-    col_dir1, col_dir2, col_dir3, col_dir4 = st.columns(4)
-    with col_dir1:
-        st.markdown("⬆️ **北**")
-    with col_dir2:
-        st.markdown("⬅️ **西**")
-    with col_dir3:
-        st.markdown("➡️ **东**")
-    with col_dir4:
-        st.markdown("⬇️ **南**")
-
-def display_coordinate_table():
-    """显示坐标表格"""
-    
-    coord_data = []
-    
-    if st.session_state.point_A["set"]:
-        # 转换坐标
-        gcj_lng, gcj_lat = convert_for_display(
+        lng, lat = convert_to_wgs84(
             st.session_state.point_A["lat"], 
             st.session_state.point_A["lng"], 
             st.session_state.coord_system
         )
-        coord_data.append({
-            "类型": "起点A",
-            "名称": "起点A",
-            "原始纬度": st.session_state.point_A["lat"],
-            "原始经度": st.session_state.point_A["lng"],
-            "显示纬度(GCJ-02)": gcj_lat,
-            "显示经度(GCJ-02)": gcj_lng
+        scatter_data.append({
+            "lng": lng, "lat": lat, "color": [0, 255, 0], "size": 100,
+            "name": f"起点A\n纬度: {st.session_state.point_A['lat']:.6f}\n经度: {st.session_state.point_A['lng']:.6f}"
         })
     
+    # 添加 B 点（红色）
     if st.session_state.point_B["set"]:
-        gcj_lng, gcj_lat = convert_for_display(
+        lng, lat = convert_to_wgs84(
             st.session_state.point_B["lat"], 
             st.session_state.point_B["lng"], 
             st.session_state.coord_system
         )
-        coord_data.append({
-            "类型": "终点B",
-            "名称": "终点B",
-            "原始纬度": st.session_state.point_B["lat"],
-            "原始经度": st.session_state.point_B["lng"],
-            "显示纬度(GCJ-02)": gcj_lat,
-            "显示经度(GCJ-02)": gcj_lng
+        scatter_data.append({
+            "lng": lng, "lat": lat, "color": [255, 0, 0], "size": 100,
+            "name": f"终点B\n纬度: {st.session_state.point_B['lat']:.6f}\n经度: {st.session_state.point_B['lng']:.6f}"
         })
     
+    # 添加障碍物（红色半透明）
     for obs in st.session_state.obstacles:
-        gcj_lng, gcj_lat = convert_for_display(obs["lat"], obs["lng"], "WGS-84")
-        coord_data.append({
-            "类型": "障碍物",
-            "名称": obs["name"],
-            "原始纬度": obs["lat"],
-            "原始经度": obs["lng"],
-            "显示纬度(GCJ-02)": gcj_lat,
-            "显示经度(GCJ-02)": gcj_lng,
-            "半径(m)": obs["radius"]
+        lng, lat = convert_to_wgs84(obs["lat"], obs["lng"], "WGS-84")
+        scatter_data.append({
+            "lng": lng, "lat": lat, "color": [255, 0, 0], "size": obs["radius"] * 2,
+            "name": f"{obs['name']}\n半径: {obs['radius']}m"
         })
     
-    if coord_data:
-        df = pd.DataFrame(coord_data)
-        st.dataframe(df, use_container_width=True)
+    layers = []
+    
+    # 散点图层
+    if scatter_data:
+        scatter_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=scatter_data,
+            get_position=["lng", "lat"],
+            get_radius="size",
+            get_fill_color="color",
+            pickable=True,
+            auto_highlight=True,
+            radius_min_pixels=5,
+            radius_max_pixels=60
+        )
+        layers.append(scatter_layer)
+    
+    # 航线图层（黄色线）
+    if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
+        a_lng, a_lat = convert_to_wgs84(
+            st.session_state.point_A["lat"], 
+            st.session_state.point_A["lng"], 
+            st.session_state.coord_system
+        )
+        b_lng, b_lat = convert_to_wgs84(
+            st.session_state.point_B["lat"], 
+            st.session_state.point_B["lng"], 
+            st.session_state.coord_system
+        )
+        
+        line_layer = pdk.Layer(
+            "LineLayer",
+            data=[{"start": [a_lng, a_lat], "end": [b_lng, b_lat]}],
+            get_source_position="start",
+            get_target_position="end",
+            get_color=[255, 255, 0],
+            get_width=5
+        )
+        layers.append(line_layer)
+    
+    # 确定地图中心
+    if st.session_state.point_A["set"]:
+        center_lng, center_lat = convert_to_wgs84(
+            st.session_state.point_A["lat"], 
+            st.session_state.point_A["lng"], 
+            st.session_state.coord_system
+        )
+    elif st.session_state.point_B["set"]:
+        center_lng, center_lat = convert_to_wgs84(
+            st.session_state.point_B["lat"], 
+            st.session_state.point_B["lng"], 
+            st.session_state.coord_system
+        )
     else:
-        st.info("暂无数据")
+        center_lng, center_lat = 118.7492, 32.2332
+    
+    # 视图设置
+    view_state = pdk.ViewState(
+        longitude=center_lng,
+        latitude=center_lat,
+        zoom=st.session_state.map_zoom,
+        pitch=st.session_state.map_pitch,
+        bearing=0
+    )
+    
+    # 创建地图
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=view_state,
+        map_style="light",
+        tooltip={"text": "{name}"}
+    )
+    
+    return deck
 
 # ============================ 页面配置 ============================
 
@@ -299,13 +273,20 @@ coord_sys = st.sidebar.selectbox(
 st.session_state.coord_system = coord_sys.split("(")[0]
 
 st.sidebar.markdown("---")
+st.sidebar.markdown("# 🗺️ 3D地图控制")
+st.session_state.map_zoom = st.sidebar.slider("缩放级别", 14, 19, st.session_state.map_zoom, 1)
+st.session_state.map_pitch = st.sidebar.slider("倾斜角度", 0, 85, st.session_state.map_pitch, 5)
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("## 📖 操作说明")
-st.sidebar.markdown("- 📍 **设置A/B点**: 输入坐标后点击按钮")
-st.sidebar.markdown("- 🚧 **添加障碍物**: 展开面板添加")
-st.sidebar.markdown("- 🗺️ **简图视图**: 显示相对位置")
-st.sidebar.markdown("- 📊 **表格视图**: 显示详细坐标")
-st.sidebar.markdown("- 💓 **飞行监控**: 实时心跳监测")
-st.sidebar.markdown("")
+st.sidebar.markdown("- 🖱️ **鼠标左键拖拽**: 旋转3D视角")
+st.sidebar.markdown("- 🖱️ **鼠标右键拖拽**: 平移地图")
+st.sidebar.markdown("- 🔍 **鼠标滚轮**: 缩放地图")
+st.sidebar.markdown("- 🟢 **绿色点**: 起点A")
+st.sidebar.markdown("- 🔴 **红色点**: 终点B/障碍物")
+st.sidebar.markdown("- 🟡 **黄色线**: 规划航线")
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### 📡 校园坐标参考")
 st.sidebar.markdown("- 教学楼: 32.2328, 118.7485")
 st.sidebar.markdown("- 图书馆: 32.2335, 118.7492")
@@ -317,7 +298,7 @@ st.sidebar.markdown("- 体育馆: 32.2318, 118.7482")
 
 if page == "🗺️ 航线规划":
     st.title("🗺️ 航线规划")
-    st.markdown("无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
+    st.markdown("3D无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
     
     col1, col2 = st.columns([1, 1.2])
     
@@ -441,50 +422,28 @@ if page == "🗺️ 航线规划":
                         st.session_state.obstacles.pop(i)
                         st.rerun()
     
-    # 地图显示区域
-    st.markdown("### 🗺️ 地图视图")
+    # 3D 地图显示
+    st.markdown("### 🗺️ 3D 地图")
+    st.markdown("💡 **操作提示**：鼠标左键拖拽旋转视角 | 鼠标右键拖拽平移 | 滚轮缩放")
     
-    # 创建选项卡
-    tab1, tab2, tab3 = st.tabs(["🗺️ 简图视图", "📊 表格视图", "📐 坐标转换详情"])
-    
-    with tab1:
-        display_ascii_map()
+    try:
+        deck = create_3d_map()
+        st.pydeck_chart(deck, use_container_width=True)
+    except Exception as e:
+        st.error(f"3D地图加载失败: {str(e)}")
+        st.info("请确保已安装 pydeck: pip install pydeck")
         
-        # 显示航线信息
-        if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
-            distance = calculate_distance(
-                st.session_state.point_A["lat"], st.session_state.point_A["lng"],
-                st.session_state.point_B["lat"], st.session_state.point_B["lng"]
-            )
-            st.info(f"✈️ **航线信息**: 起点A → 终点B | 直线距离 {distance:.1f} 米 | 飞行高度 {st.session_state.flight_height} 米")
-    
-    with tab2:
-        display_coordinate_table()
-    
-    with tab3:
-        st.markdown("### 坐标系转换说明")
-        st.markdown("""
-        #### WGS-84 与 GCJ-02 坐标系转换
-        
-        | 坐标系 | 说明 | 使用场景 |
-        |--------|------|----------|
-        | **WGS-84** | 国际标准坐标系 | GPS设备、Google Earth |
-        | **GCJ-02** | 火星坐标系 | 高德地图、百度地图(BD-09需二次转换) |
-        
-        #### 转换示例
-        """)
-        
-        # 显示转换示例
-        test_lat, test_lng = 32.2322, 118.749
-        gcj_lng, gcj_lat = wgs84_to_gcj02(test_lng, test_lat)
-        st.markdown(f"- WGS-84 → GCJ-02: ({test_lat:.6f}, {test_lng:.6f}) → ({gcj_lat:.6f}, {gcj_lng:.6f})")
-        
-        st.markdown("""
-        #### 注意事项
-        - 在中国境内，WGS-84 和 GCJ-02 之间存在偏移
-        - 高德地图使用 GCJ-02 坐标系
-        - 本系统会自动进行坐标转换
-        """)
+        # 降级显示简图
+        st.markdown("### 📋 坐标数据（降级显示）")
+        coord_data = []
+        if st.session_state.point_A["set"]:
+            coord_data.append({"类型": "起点A", "纬度": st.session_state.point_A["lat"], "经度": st.session_state.point_A["lng"]})
+        if st.session_state.point_B["set"]:
+            coord_data.append({"类型": "终点B", "纬度": st.session_state.point_B["lat"], "经度": st.session_state.point_B["lng"]})
+        for obs in st.session_state.obstacles:
+            coord_data.append({"类型": "障碍物", "名称": obs["name"], "纬度": obs["lat"], "经度": obs["lng"], "半径": f"{obs['radius']}m"})
+        if coord_data:
+            st.dataframe(pd.DataFrame(coord_data), use_container_width=True)
 
 # ============================ 飞行监控页面 ============================
 
@@ -581,6 +540,5 @@ st.markdown("---")
 st.markdown(
     "© 2024 无人机地面站系统 | "
     "支持 WGS-84 / GCJ-02 坐标系转换 | "
-    "实时心跳监测 | "
-    "简图显示相对位置"
+    "3D 地图 | 实时心跳监测"
 )
