@@ -1,6 +1,6 @@
 """
-无人机地面站系统 - 高德地图版本
-使用 folium + 高德卫星图，在 Streamlit Cloud 上可正常显示
+无人机地面站系统 - 纯Streamlit版本（无需任何额外库）
+无需 folium、pydeck、matplotlib，只依赖 streamlit 和 pandas
 """
 
 import streamlit as st
@@ -8,8 +8,6 @@ import pandas as pd
 import time
 import math
 from datetime import datetime
-import folium
-from streamlit_folium import folium_static
 
 # ============================ 坐标系转换算法 ============================
 
@@ -50,7 +48,6 @@ def out_of_china(lng, lat):
     return not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271)
 
 def convert_for_display(lat, lng, src_system):
-    """转换为地图显示坐标（高德使用 GCJ-02）"""
     if src_system == "WGS-84":
         return wgs84_to_gcj02(lng, lat)
     else:
@@ -114,144 +111,126 @@ def reset_monitor():
     st.session_state.records = []
     st.session_state.alert_msg = ""
 
-# ============================ 创建高德地图 ============================
+# ============================ 显示ASCII简化地图 ============================
 
-def create_amap():
-    """创建高德卫星地图"""
+def display_ascii_map():
+    """显示ASCII风格的地图示意图"""
     
-    # 确定地图中心
+    all_lats = []
+    all_lngs = []
+    points_info = []
+    
     if st.session_state.point_A["set"]:
-        lng, lat = convert_for_display(
-            st.session_state.point_A["lat"], 
-            st.session_state.point_A["lng"], 
-            st.session_state.coord_system
-        )
-        center_lat, center_lng = lat, lng
-    elif st.session_state.point_B["set"]:
-        lng, lat = convert_for_display(
-            st.session_state.point_B["lat"], 
-            st.session_state.point_B["lng"], 
-            st.session_state.coord_system
-        )
-        center_lat, center_lng = lat, lng
-    else:
-        center_lat, center_lng = 32.2332, 118.7492
+        all_lats.append(st.session_state.point_A["lat"])
+        all_lngs.append(st.session_state.point_A["lng"])
+        points_info.append({"type": "A", "lat": st.session_state.point_A["lat"], "lng": st.session_state.point_A["lng"], "name": "起点A"})
     
-    # 高德卫星图瓦片
-    satellite_tiles = "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"
-    
-    m = folium.Map(
-        location=[center_lat, center_lng],
-        zoom_start=st.session_state.map_zoom,
-        control_scale=True,
-        tiles=None
-    )
-    
-    # 添加卫星图
-    folium.TileLayer(
-        tiles=satellite_tiles,
-        attr='高德地图',
-        name='卫星图',
-        subdomains=['1', '2', '3', '4']
-    ).add_to(m)
-    
-    # 添加路网图
-    road_tiles = "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"
-    folium.TileLayer(
-        tiles=road_tiles,
-        attr='高德路网',
-        name='路网图',
-        subdomains=['1', '2', '3', '4']
-    ).add_to(m)
-    
-    folium.LayerControl().add_to(m)
-    folium.plugins.Fullscreen(position='topright').add_to(m)
-    
-    # 添加 A 点
-    if st.session_state.point_A["set"]:
-        lng, lat = convert_for_display(
-            st.session_state.point_A["lat"], 
-            st.session_state.point_A["lng"], 
-            st.session_state.coord_system
-        )
-        folium.Marker(
-            location=[lat, lng],
-            popup=f"起点A<br>纬度: {st.session_state.point_A['lat']:.6f}<br>经度: {st.session_state.point_A['lng']:.6f}",
-            icon=folium.Icon(color="green", icon="play", prefix="fa"),
-            tooltip="起点A"
-        ).add_to(m)
-        folium.Circle([lat, lng], radius=20, color="green", fill=True, fill_opacity=0.2).add_to(m)
-    
-    # 添加 B 点
     if st.session_state.point_B["set"]:
-        lng, lat = convert_for_display(
-            st.session_state.point_B["lat"], 
-            st.session_state.point_B["lng"], 
-            st.session_state.coord_system
-        )
-        folium.Marker(
-            location=[lat, lng],
-            popup=f"终点B<br>纬度: {st.session_state.point_B['lat']:.6f}<br>经度: {st.session_state.point_B['lng']:.6f}",
-            icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa"),
-            tooltip="终点B"
-        ).add_to(m)
-        folium.Circle([lat, lng], radius=20, color="red", fill=True, fill_opacity=0.2).add_to(m)
+        all_lats.append(st.session_state.point_B["lat"])
+        all_lngs.append(st.session_state.point_B["lng"])
+        points_info.append({"type": "B", "lat": st.session_state.point_B["lat"], "lng": st.session_state.point_B["lng"], "name": "终点B"})
     
-    # 添加航线
-    if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
-        a_lng, a_lat = convert_for_display(
+    for obs in st.session_state.obstacles:
+        all_lats.append(obs["lat"])
+        all_lngs.append(obs["lng"])
+        points_info.append({"type": "O", "lat": obs["lat"], "lng": obs["lng"], "name": obs["name"]})
+    
+    if not all_lats:
+        st.info("请先设置起点或终点")
+        return
+    
+    min_lat, max_lat = min(all_lats), max(all_lats)
+    min_lng, max_lng = min(all_lngs), max(all_lngs)
+    
+    lat_margin = (max_lat - min_lat) * 0.1 if max_lat - min_lat > 0 else 0.001
+    lng_margin = (max_lng - min_lng) * 0.1 if max_lng - min_lng > 0 else 0.001
+    
+    min_lat -= lat_margin
+    max_lat += lat_margin
+    min_lng -= lng_margin
+    max_lng += lng_margin
+    
+    grid_size = 20
+    lat_step = (max_lat - min_lat) / grid_size
+    lng_step = (max_lng - min_lng) / grid_size
+    
+    map_grid = [["  " for _ in range(grid_size)] for _ in range(grid_size)]
+    
+    for point in points_info:
+        lat_idx = int((point["lat"] - min_lat) / lat_step)
+        lng_idx = int((point["lng"] - min_lng) / lng_step)
+        if 0 <= lat_idx < grid_size and 0 <= lng_idx < grid_size:
+            if point["type"] == "A":
+                map_grid[lat_idx][lng_idx] = "A "
+            elif point["type"] == "B":
+                map_grid[lat_idx][lng_idx] = "B "
+            else:
+                if map_grid[lat_idx][lng_idx] == "  ":
+                    map_grid[lat_idx][lng_idx] = "● "
+    
+    st.markdown("### 🗺️ 相对位置示意图")
+    st.markdown("```")
+    st.markdown(f"纬度范围: {min_lat:.6f} → {max_lat:.6f}")
+    st.markdown(f"经度范围: {min_lng:.6f} → {max_lng:.6f}")
+    st.markdown("")
+    st.markdown("北 ↑")
+    
+    for i in range(grid_size - 1, -1, -1):
+        row_str = "".join(map_grid[i])
+        st.markdown(row_str)
+    
+    st.markdown("```")
+    st.caption("图例: A=起点, B=终点, ●=障碍物 | 北在上方")
+
+def display_coordinate_table():
+    """显示坐标表格"""
+    
+    coord_data = []
+    
+    if st.session_state.point_A["set"]:
+        gcj_lng, gcj_lat = convert_for_display(
             st.session_state.point_A["lat"], 
             st.session_state.point_A["lng"], 
             st.session_state.coord_system
         )
-        b_lng, b_lat = convert_for_display(
+        coord_data.append({
+            "类型": "起点A",
+            "原始纬度": st.session_state.point_A["lat"],
+            "原始经度": st.session_state.point_A["lng"],
+            "显示纬度": round(gcj_lat, 6),
+            "显示经度": round(gcj_lng, 6)
+        })
+    
+    if st.session_state.point_B["set"]:
+        gcj_lng, gcj_lat = convert_for_display(
             st.session_state.point_B["lat"], 
             st.session_state.point_B["lng"], 
             st.session_state.coord_system
         )
-        points = [[a_lat, a_lng], [b_lat, b_lng]]
-        folium.PolyLine(points, color="yellow", weight=5, opacity=0.9, 
-                       popup=f"航线 | 高度: {st.session_state.flight_height}m").add_to(m)
-        
-        # 距离标注
-        distance = calculate_distance(
-            st.session_state.point_A["lat"], st.session_state.point_A["lng"],
-            st.session_state.point_B["lat"], st.session_state.point_B["lng"]
-        )
-        mid_lat = (a_lat + b_lat) / 2
-        mid_lng = (a_lng + b_lng) / 2
-        folium.map.Marker(
-            [mid_lat, mid_lng],
-            icon=folium.DivIcon(
-                html=f'<div style="background:rgba(0,0,0,0.7);padding:2px 8px;border-radius:20px;color:yellow;">{distance:.0f}m</div>'
-            )
-        ).add_to(m)
+        coord_data.append({
+            "类型": "终点B",
+            "原始纬度": st.session_state.point_B["lat"],
+            "原始经度": st.session_state.point_B["lng"],
+            "显示纬度": round(gcj_lat, 6),
+            "显示经度": round(gcj_lng, 6)
+        })
     
-    # 添加障碍物
     for obs in st.session_state.obstacles:
-        lng, lat = convert_for_display(obs["lat"], obs["lng"], "WGS-84")
-        folium.Circle(
-            radius=obs["radius"],
-            location=[lat, lng],
-            color="red",
-            fill=True,
-            fill_opacity=0.4,
-            popup=f"{obs['name']}<br>半径: {obs['radius']}m",
-            tooltip=obs['name']
-        ).add_to(m)
+        gcj_lng, gcj_lat = convert_for_display(obs["lat"], obs["lng"], "WGS-84")
+        coord_data.append({
+            "类型": f"障碍物-{obs['name']}",
+            "原始纬度": obs["lat"],
+            "原始经度": obs["lng"],
+            "显示纬度": round(gcj_lat, 6),
+            "显示经度": round(gcj_lng, 6),
+            "半径(m)": obs["radius"]
+        })
     
-    # 图例
-    legend_html = '''
-    <div style="position: fixed; bottom: 20px; right: 20px; z-index: 1000; background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 8px; color: white; font-size: 12px;">
-        <p style="margin:0;"><span style="color:#00ff00;">●</span> 起点A</p>
-        <p style="margin:0;"><span style="color:#ff0000;">●</span> 终点B</p>
-        <p style="margin:0;"><span style="color:#ffff00;">━</span> 航线</p>
-        <p style="margin:0;"><span style="color:#ff0000;">●</span> 障碍物</p>
-    </div>
-    '''
-    m.get_root().html.add_child(folium.Element(legend_html))
-    
-    return m
+    if coord_data:
+        df = pd.DataFrame(coord_data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("暂无数据")
 
 # ============================ 页面配置 ============================
 
@@ -272,23 +251,18 @@ coord_sys = st.sidebar.selectbox(
 st.session_state.coord_system = coord_sys.split("(")[0]
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("# 🗺️ 地图控制")
-st.session_state.map_zoom = st.sidebar.slider("缩放级别", 14, 19, st.session_state.map_zoom, 1)
-
-st.sidebar.markdown("---")
 st.sidebar.markdown("## 📖 操作说明")
-st.sidebar.markdown("- 🖱️ 鼠标拖拽: 平移地图")
-st.sidebar.markdown("- 🔍 滚轮: 缩放地图")
-st.sidebar.markdown("- 🔲 右上角: 全屏显示")
-st.sidebar.markdown("- 🟢 绿色: 起点A")
-st.sidebar.markdown("- 🔴 红色: 终点B/障碍物")
-st.sidebar.markdown("- 🟡 黄色: 规划航线")
+st.sidebar.markdown("- 📍 **设置A/B点**: 输入坐标后点击按钮")
+st.sidebar.markdown("- 🚧 **添加障碍物**: 展开面板添加")
+st.sidebar.markdown("- 🗺️ **简图视图**: 显示相对位置")
+st.sidebar.markdown("- 📊 **表格视图**: 显示详细坐标")
+st.sidebar.markdown("- 💓 **飞行监控**: 实时心跳监测")
 
 # ============================ 航线规划页面 ============================
 
 if page == "🗺️ 航线规划":
     st.title("🗺️ 航线规划")
-    st.markdown("基于高德卫星图的无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
+    st.markdown("无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
     
     col1, col2 = st.columns([1, 1.2])
     
@@ -345,12 +319,12 @@ if page == "🗺️ 航线规划":
         st.markdown("### 📊 系统状态")
         
         if st.session_state.point_A["set"]:
-            st.success(f"✅ **A点已设**\n\n📍 {st.session_state.point_A['lat']:.6f}, {st.session_state.point_A['lng']:.6f}")
+            st.success(f"✅ **A点已设**\n📍 {st.session_state.point_A['lat']:.6f}, {st.session_state.point_A['lng']:.6f}")
         else:
             st.warning("❌ **A点未设**")
         
         if st.session_state.point_B["set"]:
-            st.success(f"✅ **B点已设**\n\n📍 {st.session_state.point_B['lat']:.6f}, {st.session_state.point_B['lng']:.6f}")
+            st.success(f"✅ **B点已设**\n📍 {st.session_state.point_B['lat']:.6f}, {st.session_state.point_B['lng']:.6f}")
         else:
             st.warning("❌ **B点未设**")
         
@@ -367,21 +341,23 @@ if page == "🗺️ 航线规划":
                 col_a, col_b = st.columns([3, 1])
                 with col_a:
                     st.write(f"{i+1}. {obs['name']} ({obs['radius']}m)")
+                    st.caption(f"   {obs['lat']:.6f}, {obs['lng']:.6f}")
                 with col_b:
                     if st.button("🗑️", key=f"del_{i}"):
                         st.session_state.obstacles.pop(i)
                         st.rerun()
     
     # 地图显示
-    st.markdown("### 🛰️ 高德卫星地图")
-    st.markdown("💡 鼠标滚轮缩放 | 拖拽平移 | 右上角全屏 | 右下角切换卫星图/路网图")
+    tab1, tab2 = st.tabs(["🗺️ 简图视图", "📊 表格视图"])
     
-    try:
-        amap = create_amap()
-        folium_static(amap, width=1200, height=550)
-    except Exception as e:
-        st.error(f"地图加载失败: {str(e)}")
-        st.info("请检查网络连接后刷新页面重试")
+    with tab1:
+        display_ascii_map()
+        if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
+            dist = calculate_distance(a_lat, a_lng, b_lat, b_lng)
+            st.info(f"✈️ 航线: A → B | 距离 {dist:.1f} 米 | 高度 {st.session_state.flight_height} 米")
+    
+    with tab2:
+        display_coordinate_table()
 
 # ============================ 飞行监控页面 ============================
 
@@ -450,4 +426,4 @@ else:
         st.info("📭 暂无数据，请点击「启动模拟」")
 
 st.markdown("---")
-st.markdown("© 2024 无人机地面站系统 | 高德卫星图 | WGS-84/GCJ-02 坐标转换 | 实时心跳监测")
+st.markdown("© 2024 无人机地面站系统 | 支持 WGS-84/GCJ-02 坐标转换 | ASCII简图 | 实时心跳监测")
