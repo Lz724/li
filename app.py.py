@@ -1,6 +1,6 @@
 """
-无人机地面站系统 - 高德静态卫星图版本
-使用高德静态图 API，无需 API Key，直接显示卫星影像
+无人机地面站系统 - 百度卫星图版本
+使用百度地图静态图 API，稳定显示卫星影像
 """
 
 import streamlit as st
@@ -8,10 +8,6 @@ import pandas as pd
 import time
 import math
 from datetime import datetime
-import requests
-from io import BytesIO
-from PIL import Image
-import base64
 
 # ============================ 坐标系转换算法 ============================
 
@@ -115,12 +111,12 @@ def reset_monitor():
     st.session_state.records = []
     st.session_state.alert_msg = ""
 
-# ============================ 生成高德静态卫星图 ============================
+# ============================ 生成百度卫星地图 HTML ============================
 
-def get_static_satellite_map():
-    """获取高德静态卫星图"""
+def get_baidu_satellite_map():
+    """获取百度卫星地图"""
     
-    # 确定地图中心（使用 GCJ-02 坐标）
+    # 确定地图中心（使用 GCJ-02 坐标，百度需要转换为 BD-09）
     if st.session_state.point_A["set"]:
         lng, lat = convert_for_display(
             st.session_state.point_A["lat"], 
@@ -136,10 +132,12 @@ def get_static_satellite_map():
     else:
         lng, lat = 118.7492, 32.2332
     
-    # 缩放级别
-    zoom = min(18, max(3, st.session_state.map_zoom))
+    zoom = st.session_state.map_zoom
     
-    # 构建 HTML 地图（使用高德卫星瓦片）
+    # 百度地图瓦片 URL（卫星图）
+    # 使用百度地图的卫星瓦片服务
+    tile_url = "https://shangetu{sub}.map.bdimg.com/it/u=x={x};y={y};z={z};v=009;type=sate&fm=46"
+    
     map_html = f'''
     <!DOCTYPE html>
     <html>
@@ -240,7 +238,7 @@ def get_static_satellite_map():
     <body>
         <div id="map"></div>
         <div class="info-panel">
-            <strong>🗺️ 高德卫星图</strong><br>
+            <strong>🛰️ 百度卫星地图</strong><br>
             缩放级别: {zoom} | 中心点: {lat:.6f}, {lng:.6f}
         </div>
         <div class="legend">
@@ -262,38 +260,60 @@ def get_static_satellite_map():
             mapDiv.style.width = mapWidth + 'px';
             mapDiv.style.height = mapHeight + 'px';
             
+            // 百度地图坐标转换（GCJ-02 转 BD-09）
+            function gcj02_to_bd09(lng, lat) {{
+                var x_pi = Math.PI * 3000.0 / 180.0;
+                var z = Math.sqrt(lng * lng + lat * lat) + 0.00002 * Math.sin(lat * x_pi);
+                var theta = Math.atan2(lat, lng) + 0.000003 * Math.cos(lng * x_pi);
+                var bd_lng = z * Math.cos(theta) + 0.0065;
+                var bd_lat = z * Math.sin(theta) + 0.006;
+                return {{lng: bd_lng, lat: bd_lat}};
+            }}
+            
+            // 百度墨卡托投影
             function lngToTileX(lng, zoom) {{
-                return Math.floor((lng + 180) / 360 * Math.pow(2, zoom));
+                var totalTiles = Math.pow(2, zoom);
+                var lng_rad = lng * Math.PI / 180;
+                return Math.floor((lng_rad + Math.PI) / (2 * Math.PI) * totalTiles);
             }}
             
             function latToTileY(lat, zoom) {{
+                var totalTiles = Math.pow(2, zoom);
                 var lat_rad = lat * Math.PI / 180;
-                return Math.floor((1 - Math.log(Math.tan(lat_rad) + 1 / Math.cos(lat_rad)) / Math.PI) / 2 * Math.pow(2, zoom));
+                var mercator = Math.log(Math.tan(Math.PI / 4 + lat_rad / 2));
+                return Math.floor((Math.PI - mercator) / (2 * Math.PI) * totalTiles);
             }}
             
             function tileToLng(x, zoom) {{
-                return x / Math.pow(2, zoom) * 360 - 180;
+                var totalTiles = Math.pow(2, zoom);
+                var lng_rad = (x / totalTiles) * 2 * Math.PI - Math.PI;
+                return lng_rad * 180 / Math.PI;
             }}
             
             function tileToLat(y, zoom) {{
-                var n = Math.PI - 2 * Math.PI * y / Math.pow(2, zoom);
-                return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+                var totalTiles = Math.pow(2, zoom);
+                var mercator = Math.PI - (y / totalTiles) * 2 * Math.PI;
+                var lat_rad = 2 * Math.atan(Math.exp(mercator)) - Math.PI / 2;
+                return lat_rad * 180 / Math.PI;
             }}
             
-            var centerTileX = lngToTileX(centerLng, zoom);
-            var centerTileY = latToTileY(centerLat, zoom);
+            // 转换为百度坐标
+            var bd = gcj02_to_bd09(centerLng, centerLat);
+            var centerTileX = lngToTileX(bd.lng, zoom);
+            var centerTileY = latToTileY(bd.lat, zoom);
             
             var centerTileLng = tileToLng(centerTileX, zoom);
             var centerTileLat = tileToLat(centerTileY, zoom);
-            var offsetX = (centerLng - centerTileLng) / 360 * Math.pow(2, zoom) * tileSize;
-            var offsetY = (centerTileLat - centerLat) / 360 * Math.pow(2, zoom) * tileSize;
+            var offsetX = (bd.lng - centerTileLng) / 360 * Math.pow(2, zoom) * tileSize;
+            var offsetY = (centerTileLat - bd.lat) / 360 * Math.pow(2, zoom) * tileSize;
             
             var tilesToRender = 3;
             for (var dy = -tilesToRender; dy <= tilesToRender; dy++) {{
                 for (var dx = -tilesToRender; dx <= tilesToRender; dx++) {{
                     var tileX = centerTileX + dx;
                     var tileY = centerTileY + dy;
-                    var tileUrl = 'https://webst' + (Math.abs(tileX + tileY) % 4) + '.is.autonavi.com/appmaptile?style=6&x=' + tileX + '&y=' + tileY + '&z=' + zoom;
+                    var sub = Math.abs(tileX + tileY) % 4;
+                    var tileUrl = 'https://shangetu' + sub + '.map.bdimg.com/it/u=x=' + tileX + ';y=' + tileY + ';z=' + zoom + ';v=009;type=sate&fm=46';
                     
                     var img = document.createElement('img');
                     img.src = tileUrl;
@@ -308,8 +328,9 @@ def get_static_satellite_map():
             }}
             
             function lngLatToPixel(lng, lat) {{
-                var x = (lng - centerLng) / 360 * Math.pow(2, zoom) * tileSize + mapWidth/2;
-                var y = (centerLat - lat) / 360 * Math.pow(2, zoom) * tileSize + mapHeight/2;
+                var bd = gcj02_to_bd09(lng, lat);
+                var x = (bd.lng - centerTileLng) / 360 * Math.pow(2, zoom) * tileSize + mapWidth/2;
+                var y = (centerTileLat - bd.lat) / 360 * Math.pow(2, zoom) * tileSize + mapHeight/2;
                 return {{x: x, y: y}};
             }}
             
@@ -425,13 +446,13 @@ st.sidebar.markdown("- 🟢 **绿色点**: 起点A")
 st.sidebar.markdown("- 🔴 **红色点**: 终点B")
 st.sidebar.markdown("- 🟠 **橙色点**: 障碍物")
 st.sidebar.markdown("- 🟡 **黄线**: 规划航线")
-st.sidebar.markdown("- 🛰️ **底图**: 高德卫星影像")
+st.sidebar.markdown("- 🛰️ **底图**: 百度卫星影像")
 
 # ============================ 航线规划页面 ============================
 
 if page == "🗺️ 航线规划":
     st.title("🗺️ 航线规划")
-    st.markdown("基于高德卫星图的无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
+    st.markdown("基于百度卫星图的无人机航线规划系统 | 支持 WGS-84 / GCJ-02 坐标系转换")
     
     col1, col2 = st.columns([1, 1.2])
     
@@ -517,11 +538,11 @@ if page == "🗺️ 航线规划":
                         st.rerun()
     
     # 卫星地图显示
-    st.markdown("### 🛰️ 高德卫星地图")
+    st.markdown("### 🛰️ 百度卫星地图")
     st.markdown("💡 **操作提示**：地图显示真实卫星影像 | 绿色为起点A | 红色为终点B | 橙色为障碍物 | 黄线为航线")
     
     try:
-        map_html = get_static_satellite_map()
+        map_html = get_baidu_satellite_map()
         st.components.v1.html(map_html, height=550, width=1200, scrolling=False)
     except Exception as e:
         st.error(f"卫星地图加载失败: {str(e)}")
@@ -594,4 +615,4 @@ else:
         st.info("📭 暂无数据，请点击「启动模拟」")
 
 st.markdown("---")
-st.markdown("© 2024 无人机地面站系统 | 底图: 高德卫星图 | 支持 WGS-84/GCJ-02 坐标转换 | 实时心跳监测")
+st.markdown("© 2024 无人机地面站系统 | 底图: 百度卫星图 | 支持 WGS-84/GCJ-02 坐标转换 | 实时心跳监测")
