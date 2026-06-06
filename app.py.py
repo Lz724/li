@@ -136,27 +136,11 @@ def get_static_satellite_map():
     else:
         lng, lat = 118.7492, 32.2332
     
-    # 缩放级别（高德：3-18）
+    # 缩放级别
     zoom = min(18, max(3, st.session_state.map_zoom))
     
-    # 高德静态图 API（卫星图 style=6）
-    # 无需 API Key 的公开接口
-    url = f"https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={{x}}&y={{y}}&z={zoom}"
-    
-    # 计算瓦片坐标
-    def lng_to_tile_x(lng, zoom):
-        return int((lng + 180) / 360 * (1 << zoom))
-    
-    def lat_to_tile_y(lat, zoom):
-        lat_rad = math.radians(lat)
-        return int((1 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2 * (1 << zoom))
-    
-    # 获取中心瓦片
-    tile_x = lng_to_tile_x(lng, zoom)
-    tile_y = lat_to_tile_y(lat, zoom)
-    
     # 构建 HTML 地图（使用高德卫星瓦片）
-    map_html = f"""
+    map_html = f'''
     <!DOCTYPE html>
     <html>
     <head>
@@ -251,30 +235,6 @@ def get_static_satellite_map():
                 height: 3px;
                 margin-right: 8px;
             }}
-            .zoom-control {{
-                position: absolute;
-                top: 20px;
-                right: 20px;
-                background: rgba(0,0,0,0.7);
-                border-radius: 8px;
-                z-index: 1001;
-                display: flex;
-                flex-direction: column;
-            }}
-            .zoom-btn {{
-                width: 40px;
-                height: 40px;
-                background: rgba(0,0,0,0.8);
-                color: white;
-                border: none;
-                font-size: 20px;
-                cursor: pointer;
-                border-radius: 5px;
-                margin: 2px;
-            }}
-            .zoom-btn:hover {{
-                background: rgba(100,100,100,0.8);
-            }}
         </style>
     </head>
     <body>
@@ -291,7 +251,17 @@ def get_static_satellite_map():
         </div>
         
         <script>
-            // 瓦片坐标计算
+            var zoom = {zoom};
+            var centerLng = {lng};
+            var centerLat = {lat};
+            var tileSize = 256;
+            
+            var mapDiv = document.getElementById('map');
+            var mapWidth = window.innerWidth;
+            var mapHeight = window.innerHeight;
+            mapDiv.style.width = mapWidth + 'px';
+            mapDiv.style.height = mapHeight + 'px';
+            
             function lngToTileX(lng, zoom) {{
                 return Math.floor((lng + 180) / 360 * Math.pow(2, zoom));
             }}
@@ -310,35 +280,20 @@ def get_static_satellite_map():
                 return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
             }}
             
-            var zoom = {zoom};
-            var centerLng = {lng};
-            var centerLat = {lat};
-            var tileSize = 256;
-            
-            // 获取地图容器
-            var mapDiv = document.getElementById('map');
-            var mapWidth = window.innerWidth;
-            var mapHeight = window.innerHeight;
-            mapDiv.style.width = mapWidth + 'px';
-            mapDiv.style.height = mapHeight + 'px';
-            
-            // 计算中心瓦片
             var centerTileX = lngToTileX(centerLng, zoom);
             var centerTileY = latToTileY(centerLat, zoom);
             
-            // 计算偏移
             var centerTileLng = tileToLng(centerTileX, zoom);
             var centerTileLat = tileToLat(centerTileY, zoom);
             var offsetX = (centerLng - centerTileLng) / 360 * Math.pow(2, zoom) * tileSize;
             var offsetY = (centerTileLat - centerLat) / 360 * Math.pow(2, zoom) * tileSize;
             
-            // 渲染瓦片
             var tilesToRender = 3;
             for (var dy = -tilesToRender; dy <= tilesToRender; dy++) {{
                 for (var dx = -tilesToRender; dx <= tilesToRender; dx++) {{
                     var tileX = centerTileX + dx;
                     var tileY = centerTileY + dy;
-                    var tileUrl = `https://webst${{Math.abs(tileX + tileY) % 4}}.is.autonavi.com/appmaptile?style=6&x=${{tileX}}&y=${{tileY}}&z=${{zoom}}`;
+                    var tileUrl = 'https://webst' + (Math.abs(tileX + tileY) % 4) + '.is.autonavi.com/appmaptile?style=6&x=' + tileX + '&y=' + tileY + '&z=' + zoom;
                     
                     var img = document.createElement('img');
                     img.src = tileUrl;
@@ -352,20 +307,18 @@ def get_static_satellite_map():
                 }}
             }}
             
-            // 坐标转换（像素坐标）
             function lngLatToPixel(lng, lat) {{
                 var x = (lng - centerLng) / 360 * Math.pow(2, zoom) * tileSize + mapWidth/2;
                 var y = (centerLat - lat) / 360 * Math.pow(2, zoom) * tileSize + mapHeight/2;
                 return {{x: x, y: y}};
             }}
             
-            // 添加标记
             function addMarker(lng, lat, type, name) {{
                 var pixel = lngLatToPixel(lng, lat);
                 if (pixel.x < -100 || pixel.x > mapWidth + 100 || pixel.y < -100 || pixel.y > mapHeight + 100) return;
                 
                 var marker = document.createElement('div');
-                marker.className = `marker marker-${{type}}`;
+                marker.className = 'marker marker-' + type;
                 marker.style.left = pixel.x + 'px';
                 marker.style.top = pixel.y + 'px';
                 
@@ -387,58 +340,60 @@ def get_static_satellite_map():
                 line.style.top = Math.min(p1.y, p2.y) + 'px';
                 line.style.width = Math.abs(p2.x - p1.x) + 'px';
                 line.style.height = Math.abs(p2.y - p1.y) + 'px';
-                line.style.background = 'linear-gradient(to right, #ffff00, #ffff00)';
+                line.style.background = '#ffff00';
                 line.style.border = '2px solid #ffff00';
                 line.style.opacity = '0.8';
-                line.style.transformOrigin = '0 0';
                 if (p2.x !== p1.x && p2.y !== p1.y) {{
                     var angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
-                    line.style.transform = `rotate(${{angle}}deg)`;
+                    line.style.transform = 'rotate(' + angle + 'deg)';
                 }}
                 mapDiv.appendChild(line);
             }}
             
-            // 添加标记和航线
             setTimeout(function() {{
-                ''' + (f"""
                 // 起点A
                 var a_lng = {st.session_state.point_A['lng'] if st.session_state.point_A['set'] else '0'};
                 var a_lat = {st.session_state.point_A['lat'] if st.session_state.point_A['set'] else '0'};
                 if (a_lng !== 0 && a_lat !== 0) {{
                     addMarker(a_lng, a_lat, 'a', '起点A');
                 }}
-                """ if st.session_state.point_A["set"] else "") + '''
                 
-                ''' + (f"""
                 // 终点B
                 var b_lng = {st.session_state.point_B['lng'] if st.session_state.point_B['set'] else '0'};
                 var b_lat = {st.session_state.point_B['lat'] if st.session_state.point_B['set'] else '0'};
                 if (b_lng !== 0 && b_lat !== 0) {{
                     addMarker(b_lng, b_lat, 'b', '终点B');
                 }}
-                """ if st.session_state.point_B["set"] else "") + '''
-                
-                ''' + '\n'.join([f"""
-                // 障碍物: {obs['name']}
+    '''
+    
+    # 添加障碍物
+    for obs in st.session_state.obstacles:
+        map_html += f'''
                 addMarker({obs['lng']}, {obs['lat']}, 'obstacle', '{obs['name']}');
-                """ for obs in st.session_state.obstacles]) + '''
-                
-                ''' + (f"""
-                // 航线
+        '''
+    
+    # 添加航线
+    if st.session_state.point_A["set"] and st.session_state.point_B["set"]:
+        a_lng = st.session_state.point_A['lng']
+        a_lat = st.session_state.point_A['lat']
+        b_lng = st.session_state.point_B['lng']
+        b_lat = st.session_state.point_B['lat']
+        map_html += f'''
                 if (a_lng !== 0 && a_lat !== 0 && b_lng !== 0 && b_lat !== 0) {{
-                    addLine(a_lng, a_lat, b_lng, b_lat);
+                    addLine({a_lng}, {a_lat}, {b_lng}, {b_lat});
                 }}
-                """ if st.session_state.point_A["set"] and st.session_state.point_B["set"] else "") + '''
+        '''
+    
+    map_html += '''
             }}, 100);
             
-            // 窗口大小调整时刷新
-            window.addEventListener('resize', function() {{
+            window.addEventListener('resize', function() {
                 location.reload();
-            }});
+            });
         </script>
     </body>
     </html>
-    """
+    '''
     
     return map_html
 
