@@ -17,40 +17,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# -------------------------- 会话状态初始化 --------------------------
-if "current_page" not in st.session_state:
-    st.session_state.current_page = "航线规划"
-if "a_point" not in st.session_state:
-    st.session_state.a_point = {"lat": 32.2323, "lon": 118.749, "set": False}
-if "b_point" not in st.session_state:
-    st.session_state.b_point = {"lat": 32.2344, "lon": 118.749, "set": False}
-if "flight_data" not in st.session_state:
-    st.session_state.flight_data = pd.DataFrame({
-        "时间": [datetime.now().strftime("%H:%M:%S")],
-        "纬度": [32.23335],
-        "经度": [118.749],
-        "高度(m)": [50.0],
-        "速度(m/s)": [3.2],
-        "电量(%)": [85],
-        "状态": ["正常飞行"]
-    })
-if "obstacles" not in st.session_state:
-    st.session_state.obstacles = []  # 存储障碍物 {"polygon": [[lat,lon],...], "height": 20}
-if "flight_height" not in st.session_state:
-    st.session_state.flight_height = 10
-if "safety_radius" not in st.session_state:
-    st.session_state.safety_radius = 5
-if "planned_route" not in st.session_state:
-    st.session_state.planned_route = None
-if "route_strategy" not in st.session_state:
-    st.session_state.route_strategy = "最佳航线"
-
-# -------------------------- 配置文件路径 --------------------------
-CONFIG_FILE = "obstacle_config.json"
-
 # -------------------------- 坐标转换函数（WGS84转GCJ02）--------------------------
 def wgs84_to_gcj02(lat, lon):
-    """WGS84转GCJ02坐标系（简化版）"""
+    """WGS84转GCJ02坐标系（高德/百度）"""
     a = 6378245.0
     ee = 0.00669342162296594323
     
@@ -78,9 +47,43 @@ def wgs84_to_gcj02(lat, lon):
     dlon = (dlon * 180.0) / (a / sqrtmagic * math.cos(radlat) * math.pi)
     return lat + dlat, lon + dlon
 
+# -------------------------- 会话状态初始化 --------------------------
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "航线规划"
+if "a_point" not in st.session_state:
+    st.session_state.a_point = {"lat": 32.2323, "lon": 118.749, "set": False}
+if "b_point" not in st.session_state:
+    st.session_state.b_point = {"lat": 32.2344, "lon": 118.749, "set": False}
+if "flight_data" not in st.session_state:
+    st.session_state.flight_data = pd.DataFrame({
+        "时间": [datetime.now().strftime("%H:%M:%S")],
+        "纬度": [32.23335],
+        "经度": [118.749],
+        "高度(m)": [50.0],
+        "速度(m/s)": [3.2],
+        "电量(%)": [85],
+        "状态": ["正常飞行"],
+        "心跳时间": [datetime.now().strftime("%H:%M:%S")]
+    })
+if "obstacles" not in st.session_state:
+    st.session_state.obstacles = []  # 存储障碍物 {"polygon": [[lat,lon],...], "height": 20}
+if "flight_height" not in st.session_state:
+    st.session_state.flight_height = 10
+if "safety_radius" not in st.session_state:
+    st.session_state.safety_radius = 5
+if "planned_route" not in st.session_state:
+    st.session_state.planned_route = None
+if "route_strategy" not in st.session_state:
+    st.session_state.route_strategy = "最佳航线"
+if "last_heartbeat" not in st.session_state:
+    st.session_state.last_heartbeat = datetime.now()
+
+# -------------------------- 配置文件路径 --------------------------
+CONFIG_FILE = "obstacle_config.json"
+
 # -------------------------- 障碍物持久化函数 --------------------------
 def save_obstacles_to_file():
-    """保存障碍物配置到文件"""
+    """保存障碍物配置到文件（包含高度信息）"""
     config = {
         "obstacles": st.session_state.obstacles,
         "save_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -126,144 +129,171 @@ def check_line_intersects_obstacle(line_start, line_end, obstacle_polygon):
     polygon = Polygon(obstacle_polygon)
     return line.intersects(polygon)
 
-def find_waypoints_around_obstacle(start, end, obstacle_polygon, side='left', offset=0.0001):
+def find_detour_waypoints(start, end, obstacle_polygon, side='left'):
     """计算绕行障碍物的航点"""
     polygon = Polygon(obstacle_polygon)
-    centroid = polygon.centroid
+    centroid = centroid = (polygon.centroid.x, polygon.centroid.y)
     
-    # 计算绕行方向
+    # 计算障碍物边界半径
+    bounds = polygon.bounds
+    radius = max(bounds[2] - bounds[0], bounds[3] - bounds[1]) / 2
+    
+    # 计算绕行角度
+    start_angle = math.atan2(start[1] - centroid[1], start[0] - centroid[0])
+    end_angle = math.atan2(end[1] - centroid[1], end[0] - centroid[0])
+    
+    waypoints = [start]
+    
+    # 根据绕行方向生成中间点
     if side == 'left':
-        angle_offset = 90
-    elif side == 'right':
-        angle_offset = -90
-    else:
-        angle_offset = 0
-    
-    # 计算绕行点
-    waypoints = []
-    
-    # 计算起点到障碍物最近点
-    nearest_to_start = nearest_points(Point(start), polygon)[1]
-    # 计算终点到障碍物最近点
-    nearest_to_end = nearest_points(Point(end), polygon)[1]
-    
-    # 添加绕行点
-    waypoints.append(start)
-    
-    # 生成圆弧绕行点
-    radius = polygon.bounds[2] - polygon.bounds[0]
-    center = (centroid.x, centroid.y)
-    
-    for angle in range(0, 181, 30):
-        rad = math.radians(angle if side == 'left' else -angle)
-        x = center[0] + radius * math.cos(rad)
-        y = center[1] + radius * math.sin(rad)
-        waypoints.append([y, x])
+        angle_step = 15 if start_angle < end_angle else -15
+        angles = []
+        current = start_angle
+        if start_angle < end_angle:
+            while current < end_angle:
+                angles.append(current)
+                current += math.radians(angle_step)
+        else:
+            while current > end_angle:
+                angles.append(current)
+                current -= math.radians(abs(angle_step))
+        angles.append(end_angle)
+        
+        for angle in angles:
+            x = centroid[0] + radius * 1.2 * math.cos(angle)
+            y = centroid[1] + radius * 1.2 * math.sin(angle)
+            waypoints.append([y, x])
+    else:  # right
+        angle_step = -15 if start_angle < end_angle else 15
+        angles = []
+        current = start_angle
+        if start_angle < end_angle:
+            while current < end_angle + math.radians(5):
+                angles.append(current)
+                current -= math.radians(abs(angle_step))
+        else:
+            while current > end_angle - math.radians(5):
+                angles.append(current)
+                current += math.radians(abs(angle_step))
+        angles.append(end_angle)
+        
+        for angle in angles:
+            x = centroid[0] + radius * 1.2 * math.cos(angle)
+            y = centroid[1] + radius * 1.2 * math.sin(angle)
+            waypoints.append([y, x])
     
     waypoints.append(end)
     return waypoints
 
+def calculate_route_distance(waypoints):
+    """计算航线总距离"""
+    total = 0
+    for i in range(len(waypoints)-1):
+        total += calculate_distance(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
+    return total
+
 def plan_intelligent_route():
     """智能航线规划主函数"""
     if not st.session_state.a_point["set"] or not st.session_state.b_point["set"]:
-        st.warning("请先设置起点A和终点B")
+        st.warning("⚠️ 请先设置起点A和终点B")
         return None
     
     start = (st.session_state.a_point["lat"], st.session_state.a_point["lon"])
     end = (st.session_state.b_point["lat"], st.session_state.b_point["lon"])
     flight_height = st.session_state.flight_height
+    safety_radius = st.session_state.safety_radius / 111000  # 转换为度
     
-    # 存储航线段
-    route_segments = []
-    current_start = start
+    routes = []
+    current_pos = start
     
-    # 按距离排序障碍物
-    obstacles_with_distance = []
-    for obs in st.session_state.obstacles:
-        obs_polygon = obs["polygon"]
-        obs_center = Polygon(obs_polygon).centroid
-        dist_to_start = calculate_distance(start[0], start[1], obs_center.y, obs_center.x)
-        dist_to_end = calculate_distance(end[0], end[1], obs_center.y, obs_center.x)
-        avg_dist = (dist_to_start + dist_to_end) / 2
-        obstacles_with_distance.append((avg_dist, obs))
-    
-    obstacles_with_distance.sort(key=lambda x: x[0])
-    
-    for dist, obstacle in obstacles_with_distance:
-        obs_polygon = obstacle["polygon"]
-        obs_height = obstacle.get("height", 20)
+    for i, obstacle_data in enumerate(st.session_state.obstacles):
+        obstacle_polygon = obstacle_data["polygon"]
+        obstacle_height = obstacle_data.get("height", 20)
+        
+        # 扩展安全边界
+        expanded_polygon = expand_polygon(obstacle_polygon, safety_radius)
         
         # 检查航线是否与障碍物相交
-        if check_line_intersects_obstacle(current_start, end, obs_polygon):
-            if flight_height > obs_height:
+        if check_line_intersects_obstacle(current_pos, end, expanded_polygon):
+            if flight_height > obstacle_height:
                 # 飞跃障碍物
-                route_segments.append({
+                routes.append({
                     "type": "fly_over",
-                    "start": current_start,
+                    "start": current_pos,
                     "end": end,
-                    "description": f"飞跃障碍物 (高度{flight_height}m > {obs_height}m)"
+                    "description": f"✈️ 飞跃障碍物{i+1} (飞行高度{flight_height}m > 障碍物高度{obstacle_height}m)",
+                    "color": "green"
                 })
-                current_start = end
+                current_pos = end
                 break
             else:
                 # 需要绕行
                 if st.session_state.route_strategy == "向左绕行":
-                    waypoints = find_waypoints_around_obstacle(current_start, end, obs_polygon, 'left')
-                    route_segments.append({
+                    waypoints = find_detour_waypoints(current_pos, end, expanded_polygon, 'left')
+                    routes.append({
                         "type": "detour_left",
                         "waypoints": waypoints,
-                        "description": f"向左绕行障碍物 (高度{flight_height}m <= {obs_height}m)"
+                        "description": f"⬅️ 向左绕行障碍物{i+1} (飞行高度{flight_height}m ≤ 障碍物高度{obstacle_height}m)",
+                        "color": "orange"
                     })
-                    current_start = waypoints[-1]
+                    current_pos = waypoints[-1]
                 elif st.session_state.route_strategy == "向右绕行":
-                    waypoints = find_waypoints_around_obstacle(current_start, end, obs_polygon, 'right')
-                    route_segments.append({
+                    waypoints = find_detour_waypoints(current_pos, end, expanded_polygon, 'right')
+                    routes.append({
                         "type": "detour_right",
                         "waypoints": waypoints,
-                        "description": f"向右绕行障碍物 (高度{flight_height}m <= {obs_height}m)"
+                        "description": f"➡️ 向右绕行障碍物{i+1} (飞行高度{flight_height}m ≤ 障碍物高度{obstacle_height}m)",
+                        "color": "orange"
                     })
-                    current_start = waypoints[-1]
+                    current_pos = waypoints[-1]
                 else:  # 最佳航线
                     # 计算左右绕行距离，选择较短的
-                    left_waypoints = find_waypoints_around_obstacle(current_start, end, obs_polygon, 'left')
-                    right_waypoints = find_waypoints_around_obstacle(current_start, end, obs_polygon, 'right')
+                    left_waypoints = find_detour_waypoints(current_pos, end, expanded_polygon, 'left')
+                    right_waypoints = find_detour_waypoints(current_pos, end, expanded_polygon, 'right')
                     
-                    left_distance = calculate_total_distance(left_waypoints)
-                    right_distance = calculate_total_distance(right_waypoints)
+                    left_distance = calculate_route_distance(left_waypoints)
+                    right_distance = calculate_route_distance(right_waypoints)
                     
                     if left_distance <= right_distance:
-                        waypoints = left_waypoints
-                        route_segments.append({
+                        routes.append({
                             "type": "best_detour_left",
-                            "waypoints": waypoints,
-                            "description": f"最佳航线(向左) - 距离更短"
+                            "waypoints": left_waypoints,
+                            "description": f"🏆 最佳航线(向左绕行)障碍物{i+1} - 距离{left_distance:.0f}m",
+                            "color": "purple"
                         })
+                        current_pos = left_waypoints[-1]
                     else:
-                        waypoints = right_waypoints
-                        route_segments.append({
+                        routes.append({
                             "type": "best_detour_right",
-                            "waypoints": waypoints,
-                            "description": f"最佳航线(向右) - 距离更短"
+                            "waypoints": right_waypoints,
+                            "description": f"🏆 最佳航线(向右绕行)障碍物{i+1} - 距离{right_distance:.0f}m",
+                            "color": "purple"
                         })
-                    current_start = waypoints[-1]
+                        current_pos = right_waypoints[-1]
     
     # 添加最后直线段
-    if current_start != end:
-        route_segments.append({
+    if current_pos != end:
+        routes.append({
             "type": "straight",
-            "start": current_start,
+            "start": current_pos,
             "end": end,
-            "description": "直线飞行"
+            "description": "➡️ 直线飞行至终点",
+            "color": "blue"
         })
     
-    return route_segments
+    return routes
 
-def calculate_total_distance(waypoints):
-    """计算航点总距离"""
-    total = 0
-    for i in range(len(waypoints)-1):
-        total += calculate_distance(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
-    return total
+def expand_polygon(polygon_coords, buffer_deg):
+    """扩展多边形（安全边界）"""
+    try:
+        poly = Polygon(polygon_coords)
+        expanded = poly.buffer(buffer_deg)
+        if expanded.geom_type == 'Polygon':
+            return [[coord[1], coord[0]] for coord in expanded.exterior.coords]
+        else:
+            return polygon_coords
+    except:
+        return polygon_coords
 
 # -------------------------- 侧边栏 --------------------------
 with st.sidebar:
@@ -294,12 +324,19 @@ with st.sidebar:
     st.divider()
     
     st.subheader("✅ 系统状态")
-    st.write(f"A点状态: {'已设置' if st.session_state.a_point['set'] else '未设置'}")
-    st.write(f"B点状态: {'已设置' if st.session_state.b_point['set'] else '未设置'}")
-    st.write(f"心跳包: {'正常' if st.session_state.flight_data.iloc[-1]['电量(%)'] > 0 else '异常'}")
+    st.write(f"A点状态: {'✅ 已设置' if st.session_state.a_point['set'] else '❌ 未设置'}")
+    st.write(f"B点状态: {'✅ 已设置' if st.session_state.b_point['set'] else '❌ 未设置'}")
+    
+    # 心跳包状态显示
+    time_since_last = (datetime.now() - st.session_state.last_heartbeat).total_seconds()
+    if time_since_last < 5:
+        st.write(f"💓 心跳包: 🟢 正常 ({time_since_last:.1f}秒前)")
+    else:
+        st.write(f"💓 心跳包: 🔴 异常 ({time_since_last:.1f}秒前)")
+    
     if st.session_state.current_page == "飞行监控":
-        st.write(f"无人机状态: {st.session_state.flight_data.iloc[-1]['状态']}")
-        st.write(f"当前电量: {st.session_state.flight_data.iloc[-1]['电量(%)']}%")
+        st.write(f"🚁 无人机状态: {st.session_state.flight_data.iloc[-1]['状态']}")
+        st.write(f"🔋 当前电量: {st.session_state.flight_data.iloc[-1]['电量(%)']}%")
 
 # -------------------------- 页面1：航线规划 --------------------------
 if st.session_state.current_page == "航线规划":
@@ -331,18 +368,13 @@ if st.session_state.current_page == "航线规划":
         st.session_state.route_strategy = route_strategy
         
         if st.button("✈️ 智能规划航线", use_container_width=True, type="primary"):
-            with st.spinner("正在规划航线..."):
-                route = plan_intelligent_route()
-                if route:
-                    st.session_state.planned_route = route
-                    st.success("✅ 航线规划完成！")
+            with st.spinner("🔄 正在规划航线..."):
+                routes = plan_intelligent_route()
+                if routes:
+                    st.session_state.planned_route = routes
+                    total_dist = sum([calculate_route_distance([r['start'], r['end']]) if 'start' in r else calculate_route_distance(r['waypoints']) for r in routes if 'start' in r or 'waypoints' in r])
+                    st.success(f"✅ 航线规划完成！总距离: {total_dist:.0f}m")
                     st.rerun()
-        
-        if st.session_state.planned_route:
-            st.divider()
-            st.subheader("📋 航线规划结果")
-            for i, segment in enumerate(st.session_state.planned_route):
-                st.info(f"{i+1}. {segment['description']}")
         
         if set_a:
             st.session_state.a_point = {"lat": a_lat, "lon": a_lon, "set": True}
@@ -388,20 +420,30 @@ if st.session_state.current_page == "航线规划":
             st.info(f"📊 障碍物数量: {len(st.session_state.obstacles)}")
             for i, obs in enumerate(st.session_state.obstacles):
                 height = obs.get("height", 20)
-                st.caption(f"障碍物{i+1}: 高度{height}m, {len(obs['polygon'])}个顶点")
+                st.caption(f"🚧 障碍物{i+1}: 高度{height}m, {len(obs['polygon'])}个顶点")
+        
+        if st.session_state.planned_route:
+            st.divider()
+            st.subheader("📋 航线规划结果")
+            for i, segment in enumerate(st.session_state.planned_route):
+                st.info(f"{i+1}. {segment['description']}")
 
     with col_map:
         st.header("🗺️ 智能航线规划地图")
         
-        # 坐标转换
+        # 坐标转换和地图配置
         if coord_system == "GCJ-02(高德/百度)":
             tile_url = "https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"
             tile_attr = "&copy; 高德地图"
+            # 转换坐标
             center_lat, center_lon = st.session_state.a_point["lat"], st.session_state.a_point["lon"]
+            if st.session_state.a_point["set"]:
+                center_lat, center_lon = wgs84_to_gcj02(st.session_state.a_point["lat"], st.session_state.a_point["lon"])
         else:
             tile_url = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             tile_attr = "&copy; OpenStreetMap contributors"
-            center_lat, center_lon = st.session_state.a_point["lat"], st.session_state.a_point["lon"]
+            center_lat = st.session_state.a_point["lat"] if st.session_state.a_point["set"] else 32.2323
+            center_lon = st.session_state.a_point["lon"] if st.session_state.a_point["set"] else 118.749
         
         m = folium.Map(
             location=[center_lat, center_lon],
@@ -432,73 +474,108 @@ if st.session_state.current_page == "航线规划":
             polygon_coords = obstacle_data["polygon"]
             height = obstacle_data.get("height", 20)
             
+            # 坐标转换（如果需要）
+            display_coords = polygon_coords
+            if coord_system == "GCJ-02(高德/百度)":
+                display_coords = [[wgs84_to_gcj02(lat, lon)[0], wgs84_to_gcj02(lat, lon)[1]] for lat, lon in polygon_coords]
+            
             folium.Polygon(
-                locations=polygon_coords,
+                locations=display_coords,
                 color="red",
                 weight=3,
                 fill=True,
                 fill_color="red",
                 fill_opacity=0.3,
-                popup=f"障碍物 {i+1}\n高度: {height}m\n顶点数: {len(polygon_coords)}"
+                popup=f"🚧 障碍物 {i+1}\n📏 高度: {height}m\n📍 顶点数: {len(polygon_coords)}"
             ).add_to(m)
             
             # 添加高度标注
-            center = Polygon(polygon_coords).centroid
-            folium.Marker(
-                location=[center.y, center.x],
-                popup=f"高度: {height}m",
-                icon=folium.DivIcon(html=f'<div style="font-size: 10px; color: red;">🚧{height}m</div>')
-            ).add_to(m)
+            try:
+                center = Polygon(polygon_coords).centroid
+                center_lat_gcj, center_lon_gcj = wgs84_to_gcj02(center.y, center.x) if coord_system == "GCJ-02(高德/百度)" else (center.y, center.x)
+                folium.Marker(
+                    location=[center_lat_gcj, center_lon_gcj],
+                    icon=folium.DivIcon(html=f'<div style="font-size: 11px; font-weight: bold; color: red; background: white; padding: 2px 5px; border-radius: 10px;">🚧{height}m</div>')
+                ).add_to(m)
+            except:
+                pass
         
         # 绘制智能规划航线
         if st.session_state.planned_route:
             for segment in st.session_state.planned_route:
                 if segment["type"] in ["fly_over", "straight"]:
+                    # 坐标转换
+                    start_coords = segment["start"]
+                    end_coords = segment["end"]
+                    if coord_system == "GCJ-02(高德/百度)":
+                        start_coords = wgs84_to_gcj02(segment["start"][0], segment["start"][1])
+                        end_coords = wgs84_to_gcj02(segment["end"][0], segment["end"][1])
+                    
                     folium.PolyLine(
-                        locations=[[segment["start"][0], segment["start"][1]], [segment["end"][0], segment["end"][1]]],
-                        color="green" if segment["type"] == "fly_over" else "blue",
+                        locations=[[start_coords[0], start_coords[1]], [end_coords[0], end_coords[1]]],
+                        color=segment["color"],
                         weight=4,
                         opacity=0.8,
                         popup=segment["description"]
                     ).add_to(m)
                 elif "waypoints" in segment:
-                    # 绘制绕行航线
+                    # 坐标转换
+                    display_waypoints = []
+                    for wp in segment["waypoints"]:
+                        if coord_system == "GCJ-02(高德/百度)":
+                            gcj_lat, gcj_lon = wgs84_to_gcj02(wp[0], wp[1])
+                            display_waypoints.append([gcj_lat, gcj_lon])
+                        else:
+                            display_waypoints.append([wp[0], wp[1]])
+                    
                     folium.PolyLine(
-                        locations=[[wp[0], wp[1]] for wp in segment["waypoints"]],
-                        color="orange",
+                        locations=display_waypoints,
+                        color=segment["color"],
                         weight=4,
                         opacity=0.8,
                         popup=segment["description"]
                     ).add_to(m)
                     
                     # 标记绕行点
-                    for wp in segment["waypoints"][1:-1]:
+                    for wp in display_waypoints[1:-1]:
                         folium.CircleMarker(
                             location=[wp[0], wp[1]],
-                            radius=3,
+                            radius=4,
                             color="yellow",
-                            fill=True
+                            fill=True,
+                            popup="航点"
                         ).add_to(m)
         
         # 绘制A/B点
         if st.session_state.a_point["set"]:
+            a_coords = (st.session_state.a_point["lat"], st.session_state.a_point["lon"])
+            if coord_system == "GCJ-02(高德/百度)":
+                a_coords = wgs84_to_gcj02(st.session_state.a_point["lat"], st.session_state.a_point["lon"])
+            
             folium.Marker(
-                location=[st.session_state.a_point["lat"], st.session_state.a_point["lon"]],
-                popup=f"起点A\n高度: {st.session_state.flight_height}m\n安全半径: {st.session_state.safety_radius}m",
+                location=[a_coords[0], a_coords[1]],
+                popup=f"📍 起点A\n✈️ 高度: {st.session_state.flight_height}m\n🛡️ 安全半径: {st.session_state.safety_radius}m",
                 icon=folium.Icon(color="green", icon="play", prefix='fa')
             ).add_to(m)
+            
+            # 安全半径圆
             folium.Circle(
                 radius=st.session_state.safety_radius,
-                location=[st.session_state.a_point["lat"], st.session_state.a_point["lon"]],
+                location=[a_coords[0], a_coords[1]],
                 color="green",
                 fill=False,
-                weight=2
+                weight=2,
+                popup=f"安全半径: {st.session_state.safety_radius}m"
             ).add_to(m)
         
         if st.session_state.b_point["set"]:
+            b_coords = (st.session_state.b_point["lat"], st.session_state.b_point["lon"])
+            if coord_system == "GCJ-02(高德/百度)":
+                b_coords = wgs84_to_gcj02(st.session_state.b_point["lat"], st.session_state.b_point["lon"])
+            
             folium.Marker(
-                location=[st.session_state.b_point["lat"], st.session_state.b_point["lon"]],
-                popup="终点B",
+                location=[b_coords[0], b_coords[1]],
+                popup="🏁 终点B",
                 icon=folium.Icon(color="blue", icon="flag-checkered", prefix='fa')
             ).add_to(m)
         
@@ -511,8 +588,6 @@ if st.session_state.current_page == "航线规划":
             if drawing.get("geometry", {}).get("type") == "Polygon":
                 coordinates = drawing["geometry"]["coordinates"][0]
                 polygon_coords = [[coord[1], coord[0]] for coord in coordinates]
-                
-                # 弹出高度设置对话框
                 st.session_state.temp_polygon = polygon_coords
                 st.session_state.show_height_dialog = True
         
@@ -552,8 +627,12 @@ elif st.session_state.current_page == "飞行监控":
             tile_attr = "&copy; OpenStreetMap contributors"
         
         latest = st.session_state.flight_data.iloc[-1]
+        display_lat, display_lon = latest["纬度"], latest["经度"]
+        if coord_system == "GCJ-02(高德/百度)":
+            display_lat, display_lon = wgs84_to_gcj02(latest["纬度"], latest["经度"])
+        
         m = folium.Map(
-            location=[latest["纬度"], latest["经度"]],
+            location=[display_lat, display_lon],
             zoom_start=18,
             tiles=tile_url,
             attr=tile_attr,
@@ -564,20 +643,33 @@ elif st.session_state.current_page == "飞行监控":
         for i, obstacle_data in enumerate(st.session_state.obstacles):
             polygon_coords = obstacle_data["polygon"]
             height = obstacle_data.get("height", 20)
+            
+            display_coords = polygon_coords
+            if coord_system == "GCJ-02(高德/百度)":
+                display_coords = [[wgs84_to_gcj02(lat, lon)[0], wgs84_to_gcj02(lat, lon)[1]] for lat, lon in polygon_coords]
+            
             folium.Polygon(
-                locations=polygon_coords,
+                locations=display_coords,
                 color="red",
                 weight=2,
                 fill=True,
                 fill_color="red",
                 fill_opacity=0.3,
-                popup=f"障碍物 {i+1}\n高度: {height}m"
+                popup=f"🚧 障碍物 {i+1}\n高度: {height}m"
             ).add_to(m)
         
         # 绘制历史飞行轨迹
         if len(st.session_state.flight_data) > 1:
+            history_coords = []
+            for _, row in st.session_state.flight_data.iterrows():
+                if coord_system == "GCJ-02(高德/百度)":
+                    lat, lon = wgs84_to_gcj02(row["纬度"], row["经度"])
+                else:
+                    lat, lon = row["纬度"], row["经度"]
+                history_coords.append([lat, lon])
+            
             folium.PolyLine(
-                locations=st.session_state.flight_data[["纬度", "经度"]].values.tolist(),
+                locations=history_coords,
                 color="blue",
                 weight=2,
                 opacity=0.7,
@@ -585,18 +677,18 @@ elif st.session_state.current_page == "飞行监控":
             ).add_to(m)
         
         folium.Marker(
-            location=[latest["纬度"], latest["经度"]],
-            popup=f"当前位置\n高度: {latest['高度(m)']}m\n速度: {latest['速度(m/s)']}m/s",
+            location=[display_lat, display_lon],
+            popup=f"🚁 当前位置\n📏 高度: {latest['高度(m)']}m\n⚡ 速度: {latest['速度(m/s)']}m/s\n🔋 电量: {latest['电量(%)']}%",
             icon=folium.Icon(color="red", icon="plane", prefix='fa')
         ).add_to(m)
         
         st_folium(m, width="100%", height=500, key="flight_map")
         
-        # 心跳包模拟
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("💓 发送心跳包", use_container_width=True):
-                st.success("心跳包已发送")
+                st.session_state.last_heartbeat = datetime.now()
+                st.success("✅ 心跳包已发送")
         with col2:
             if st.button("🔄 更新数据", use_container_width=True):
                 new_row = {
@@ -606,39 +698,10 @@ elif st.session_state.current_page == "飞行监控":
                     "高度(m)": round(latest["高度(m)"] + 0.2, 1),
                     "速度(m/s)": round(latest["速度(m/s)"] + 0.1, 1),
                     "电量(%)": max(latest["电量(%)"] - 1, 0),
-                    "状态": "正常飞行" if latest["电量(%)"] > 20 else "低电量告警"
+                    "状态": "正常飞行" if latest["电量(%)"] > 20 else "⚠️ 低电量告警",
+                    "心跳时间": datetime.now().strftime("%H:%M:%S")
                 }
                 st.session_state.flight_data = pd.concat([st.session_state.flight_data, pd.DataFrame([new_row])], ignore_index=True)
                 st.rerun()
         with col3:
-            st.metric("心跳间隔", "2秒", delta="正常")
-    
-    with col_data:
-        st.subheader("📊 实时参数")
-        latest = st.session_state.flight_data.iloc[-1]
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(label="📏 高度(m)", value=latest["高度(m)"])
-            st.metric(label="🔋 电量(%)", value=latest["电量(%)"])
-        with col2:
-            st.metric(label="⚡ 速度(m/s)", value=latest["速度(m/s)"])
-            st.metric(label="📍 状态", value=latest["状态"])
-        
-        st.divider()
-        
-        st.subheader("📍 当前位置")
-        st.write(f"纬度: {latest['纬度']:.6f}")
-        st.write(f"经度: {latest['经度']:.6f}")
-        st.write(f"坐标系: {coord_system}")
-        
-        if st.session_state.obstacles:
-            st.divider()
-            st.subheader("🚧 障碍物列表")
-            for i, obs in enumerate(st.session_state.obstacles):
-                height = obs.get("height", 20)
-                st.write(f"障碍物 {i+1}: 高度{height}m, {len(obs['polygon'])}个顶点")
-        
-        st.divider()
-        st.subheader("📋 飞行历史")
-        st.dataframe(st.session_state.flight_data.tail(10), use_container_width=True, hide_index=True)
+            time_since_last = (datetime.now() - st.session_state.last_heartbeat).
