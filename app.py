@@ -2,6 +2,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 import folium
 import math
+import random
 
 # ===================== 页面全局配置 =====================
 st.set_page_config(
@@ -40,6 +41,19 @@ def wgs84_to_gcj02(lon, lat):
     gcj_lon = lon + dlon
     return (gcj_lon, gcj_lat)
 
+# ===================== 模拟输电塔杆数据（WGS84坐标） =====================
+# 沿一条线路生成10个塔杆位置（经度递增）
+towers_wgs = []
+start_lon, start_lat = 118.73, 32.22
+for i in range(10):
+    lon = start_lon + i * 0.0035   # 间隔约300-400米
+    lat = start_lat + 0.0005 * math.sin(i * 0.8)  # 轻微波动模拟实际走向
+    towers_wgs.append((lon, lat, f"塔杆-{i+1}"))
+
+# 定义故障点（在几个塔杆上设置故障）
+fault_indices = [2, 5, 7]  # 塔杆3、6、8有故障
+fault_towers = [towers_wgs[i] for i in fault_indices]
+
 # ===================== 侧边栏 =====================
 with st.sidebar:
     st.header("导航菜单")
@@ -49,7 +63,7 @@ with st.sidebar:
     coord_type = st.selectbox("坐标系", ["GCJ-02", "WGS84", "BD09"])
     st.divider()
     st.subheader("地图缩放")
-    zoom = st.slider("缩放级别", 1, 18, 15)
+    zoom = st.slider("缩放级别", 1, 18, 14)
 
 # ===================== 主页面标题 =====================
 st.title("无人机飞行实训考核系统")
@@ -86,15 +100,16 @@ with col_left:
     st.progress(10/10)
     st.write("得分：10 / 10")
 
-# ===================== 右侧 高德地图（正常加载、无报错） =====================
+# ===================== 右侧 高德地图（带真实巡检数据） =====================
 with col_right:
-    st.subheader("飞行地图")
-    # 地图中心点
-    lon_wgs, lat_wgs = 118.75, 32.23
+    st.subheader(f"飞行地图 - {page_select}模式")
+    
+    # 地图中心点（取第三个塔杆位置）
+    center_lon_wgs, center_lat_wgs = towers_wgs[4][0], towers_wgs[4][1]
     if coord_type == "GCJ-02":
-        map_lon, map_lat = wgs84_to_gcj02(lon_wgs, lat_wgs)
+        map_lon, map_lat = wgs84_to_gcj02(center_lon_wgs, center_lat_wgs)
     else:
-        map_lon, map_lat = lon_wgs, lat_wgs
+        map_lon, map_lat = center_lon_wgs, center_lat_wgs
 
     # 初始化高德地图
     m = folium.Map(
@@ -104,25 +119,106 @@ with col_right:
         attr="高德地图"
     )
 
-    # 测试标记点
-    point_list = [
-        (118.755, 32.235),
-        (118.756, 32.236)
-    ]
-    for plon, plat in point_list:
+    # ----- 1. 绘制输电线路（将所有塔杆用线连接）-----
+    line_coords = []
+    for lon, lat, name in towers_wgs:
         if coord_type == "GCJ-02":
-            plon, plat = wgs84_to_gcj02(plon, plat)
-        folium.CircleMarker(
-            location=[plat, plon],
-            radius=7,
-            color="orange",
-            fill=True,
-            fill_color="orange"
-        ).add_to(m)
+            mlon, mlat = wgs84_to_gcj02(lon, lat)
+        else:
+            mlon, mlat = lon, lat
+        line_coords.append([mlat, mlon])
+    
+    # 添加线路（黄色线条）
+    folium.PolyLine(
+        locations=line_coords,
+        color="yellow",
+        weight=4,
+        opacity=0.8,
+        popup="输电线路"
+    ).add_to(m)
 
+    # ----- 2. 绘制塔杆标记 -----
+    for lon, lat, name in towers_wgs:
+        if coord_type == "GCJ-02":
+            mlon, mlat = wgs84_to_gcj02(lon, lat)
+        else:
+            mlon, mlat = lon, lat
+        
+        # 判断是否为故障塔杆
+        is_fault = (lon, lat, name) in fault_towers
+        
+        # 根据模式及故障状态显示不同图标
+        if page_select == "飞行监控" and is_fault:
+            # 故障点：红色闪烁效果（用红色大标记）
+            folium.Marker(
+                location=[mlat, mlon],
+                popup=f"⚠️ {name} - 绝缘子破损",
+                icon=folium.Icon(color="red", icon="exclamation-triangle", prefix="fa")
+            ).add_to(m)
+        else:
+            # 普通塔杆或航线规划模式：蓝色圆点
+            folium.CircleMarker(
+                location=[mlat, mlon],
+                radius=6,
+                color="blue" if not is_fault else "orange",
+                fill=True,
+                fill_color="blue" if not is_fault else "orange",
+                popup=name,
+                fill_opacity=0.7
+            ).add_to(m)
+    
+    # ----- 3. 如果是飞行监控模式，添加无人机模拟位置（第5个塔杆附近）-----
+    if page_select == "飞行监控":
+        # 模拟无人机当前位置（在第7个塔杆附近随机偏移）
+        drone_idx = 6
+        drone_lon_wgs, drone_lat_wgs, _ = towers_wgs[drone_idx]
+        # 添加小偏移模拟悬停
+        drone_lon_wgs += random.uniform(-0.0005, 0.0005)
+        drone_lat_wgs += random.uniform(-0.0003, 0.0003)
+        
+        if coord_type == "GCJ-02":
+            drone_lon, drone_lat = wgs84_to_gcj02(drone_lon_wgs, drone_lat_wgs)
+        else:
+            drone_lon, drone_lat = drone_lon_wgs, drone_lat_wgs
+        
+        # 无人机图标（自定义）
+        folium.Marker(
+            location=[drone_lat, drone_lon],
+            popup=f"✈️ 无人机 (正在巡检塔杆{drone_idx+1})",
+            icon=folium.Icon(color="green", icon="drone", prefix="fa")
+        ).add_to(m)
+        
+        # 添加无人机巡检路径（从起点到当前位置的虚线）
+        flown_path = line_coords[:drone_idx+1]
+        folium.PolyLine(
+            locations=flown_path,
+            color="green",
+            weight=4,
+            opacity=0.6,
+            dash_array="5, 5",
+            popup="已巡检路径"
+        ).add_to(m)
+    
+    # 添加图例说明（通过HTML注入）
+    legend_html = '''
+    <div style="position: fixed; bottom: 30px; right: 30px; z-index: 1000; background-color: white; padding: 8px 12px; border-radius: 8px; border: 1px solid grey; font-size: 12px;">
+        <b>图例</b><br>
+        🟡 黄色线：输电线路<br>
+        🔵 蓝点：普通塔杆<br>
+        🔴 红点：故障塔杆(监控模式)<br>
+        🟢 绿飞机：无人机(监控模式)<br>
+        🟢 绿虚线：已巡检路径(监控模式)
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+    
     # 渲染地图
-    st_folium(m, width="100%", height=600)
+    output = st_folium(m, width="100%", height=600)
+    
+    # 可选：显示点击交互信息
+    if output and output.get("last_clicked"):
+        st.success(f"点击了坐标: {output['last_clicked']}")
 
 # ===================== 底部备注 =====================
 st.divider()
-st.caption("当前页面：" + page_select + " | 坐标系：" + coord_type)
+st.caption(f"当前页面：{page_select} | 坐标系：{coord_type} | 塔杆数量：{len(towers_wgs)} | 故障点：{len(fault_towers)}个")
