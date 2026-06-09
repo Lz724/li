@@ -1,3 +1,0 @@
-streamlit
-pydeck
-folium
