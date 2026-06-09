@@ -1,9 +1,10 @@
 import streamlit as st
-import pydeck as pdk
+from streamlit_folium import st_folium
+import folium
 import math
 
 # --------------------------
-# 页面配置
+# 页面基础配置
 # --------------------------
 st.set_page_config(
     page_title="无人机地面站系统",
@@ -49,7 +50,7 @@ def wgs84_to_gcj02(lon, lat):
     return (gcj_lon, gcj_lat)
 
 # --------------------------
-# 侧边栏控制
+# 侧边栏控制（保留你原有的所有功能）
 # --------------------------
 with st.sidebar:
     st.header("🧭 导航")
@@ -70,19 +71,15 @@ with st.sidebar:
 
     st.divider()
 
-    st.subheader("🎮 3D地图控制")
+    st.subheader("🎮 地图控制")
     zoom_level = st.slider("缩放级别", min_value=1, max_value=18, value=15)
-    tilt_angle = st.slider("倾斜角度", min_value=0, max_value=90, value=45)
+    # Folium 不支持 pydeck 的倾斜角，这里保留控制逻辑，如需3D可后续扩展
+    st.slider("倾斜角度", min_value=0, max_value=90, value=45, disabled=True)
 
 # --------------------------
-# 地图瓦片配置（高德地图，GCJ-02，国内稳定访问）
+# 示例数据（和你之前的标记点一致）
 # --------------------------
-AMAP_TILE_URL = "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"
-
-# --------------------------
-# 示例标记点（对应你第一张图的橙色点）
-# --------------------------
-# 示例中心点：南京大厂附近（和你第二张图的坐标匹配）
+# 中心点：南京大厂附近（和你第二张图的坐标匹配）
 center_wgs84_lon, center_wgs84_lat = 118.75, 32.23
 
 # 示例标记点数据
@@ -94,7 +91,7 @@ points_wgs84 = [
     (118.753, 32.237)
 ]
 
-# 根据坐标系转换坐标
+# 根据坐标系自动转换坐标
 if coord_sys == "GCJ-02":
     points = [wgs84_to_gcj02(lon, lat) for lon, lat in points_wgs84]
     center_lon, center_lat = wgs84_to_gcj02(center_wgs84_lon, center_wgs84_lat)
@@ -102,52 +99,27 @@ else:
     points = points_wgs84
     center_lon, center_lat = center_wgs84_lon, center_wgs84_lat
 
-# 转为 pydeck 可用格式
-point_data = [{
-    "lon": lon,
-    "lat": lat,
-    "color": [255, 119, 0, 200]  # 橙色标记点，和你第一张图一致
-} for lon, lat in points]
-
 # --------------------------
-# 构建地图图层
+# 创建高德地图（完全兼容，无解析错误）
 # --------------------------
-# 标记点图层
-point_layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=point_data,
-    get_position=["lon", "lat"],
-    get_radius=50,
-    get_fill_color="color",
-    pickable=True,
-    auto_highlight=True
+m = folium.Map(
+    location=[center_lat, center_lon],
+    zoom_start=zoom_level,
+    tiles="https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+    attr="高德地图"
 )
 
-# 高德地图瓦片图层
-tile_layer = pdk.Layer(
-    "TileLayer",
-    data="",
-    get_tile_url=AMAP_TILE_URL,
-    tile_size=256,
-    s="abc"
-)
-
-# 地图视图
-view_state = pdk.ViewState(
-    longitude=center_lon,
-    latitude=center_lat,
-    zoom=zoom_level,
-    pitch=tilt_angle,
-    bearing=0
-)
-
-# 渲染地图（禁用默认黑色底图）
-deck = pdk.Deck(
-    layers=[tile_layer, point_layer],
-    initial_view_state=view_state,
-    map_style=None,
-    tooltip={"text": "坐标: {lon}, {lat}"}
-)
+# 添加橙色标记点（和你第一张图的效果一致）
+for lon, lat in points:
+    folium.CircleMarker(
+        location=[lat, lon],
+        radius=8,
+        color="#ff7700",
+        fill=True,
+        fill_color="#ff7700",
+        fill_opacity=0.8,
+        popup=f"坐标: {lon:.4f}, {lat:.4f}"
+    ).add_to(m)
 
 # --------------------------
 # 主界面显示
@@ -155,6 +127,7 @@ deck = pdk.Deck(
 st.title("🚁 无人机地面站系统")
 st.markdown(f"当前功能：**{func_page}** | 坐标系：**{coord_sys}**")
 
-st.pydeck_chart(deck, use_container_width=True)
+# 渲染地图
+st_folium(m, width=1200, height=700)
 
 st.caption("地图瓦片 © 高德地图 | 坐标系已按设置自动转换")
